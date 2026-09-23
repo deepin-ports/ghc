@@ -7,7 +7,7 @@
  *
  * ---------------------------------------------------------------------------*/
 
-#include "PosixSource.h"
+#include "rts/PosixSource.h"
 #include "Rts.h"
 
 #include "StgPrimFloat.h"
@@ -48,7 +48,7 @@
 
 #define __abs(a)                (( (a) >= 0 ) ? (a) : (-(a)))
 
-/** Trac #15271: Some large ratios are converted into double incorrectly.
+/** #15271: Some large ratios are converted into double incorrectly.
   * This occurs when StgInt has 64 bits and C int has 32 bits, where wrapping
   * occurs and an incorrect signed value is passed into ldexp */
 STATIC_INLINE int
@@ -248,4 +248,3 @@ __decodeFloat_Int (I_ *man, I_ *exp, StgFloat flt)
             *man = - *man;
     }
 }
-

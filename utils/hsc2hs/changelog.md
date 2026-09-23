@@ -1,3 +1,20 @@
+## 0.68.10
+
+ - Further improve robustness of detection of pointer types in `--cross` mode.
+
+ - Compatibility with new `base` versions
+
+## 0.68.9
+
+ - Improve robustness of detection of pointer types in `--cross` mode.
+
+## 0.68.8
+
+ - Process flags in order, now the last of `--compiler`, `--linker`,
+    `--template` is used. (#35)
+
+ - WINIO: Make sure that with we don't use the TEMP workaround (#52)
+
 ## 0.68.7
 
  - The C compiler is now assumed to be called `cc` instead of `gcc`

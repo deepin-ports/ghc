@@ -1,8 +1,4 @@
-#if __GLASGOW_HASKELL__ >= 709
 {-# LANGUAGE Safe #-}
-#else
-{-# LANGUAGE Trustworthy #-}
-#endif
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  System.Posix.SharedMem
@@ -24,10 +20,13 @@ module System.Posix.SharedMem
 #include "HsUnix.h"
 
 #include <sys/types.h>
+#if defined(HAVE_SHM_OPEN) || defined(HAVE_SHM_UNLINK)
 #include <sys/mman.h>
+#endif
 #include <fcntl.h>
 
 import System.Posix.Types
+import qualified System.Posix.Internals as Base
 #if defined(HAVE_SHM_OPEN) || defined(HAVE_SHM_UNLINK)
 import Foreign.C
 #endif
@@ -52,14 +51,14 @@ shmOpen :: String -> ShmOpenFlags -> FileMode -> IO Fd
 shmOpen name flags mode =
     do cflags0 <- return 0
        cflags1 <- return $ cflags0 .|. (if shmReadWrite flags
-                                        then #{const O_RDWR}
-                                        else #{const O_RDONLY})
-       cflags2 <- return $ cflags1 .|. (if shmCreate flags then #{const O_CREAT}
+                                        then Base.o_RDWR
+                                        else Base.o_RDONLY)
+       cflags2 <- return $ cflags1 .|. (if shmCreate flags then Base.o_CREAT
                                         else 0)
        cflags3 <- return $ cflags2 .|. (if shmExclusive flags
-                                        then #{const O_EXCL}
+                                        then Base.o_EXCL
                                         else 0)
-       cflags4 <- return $ cflags3 .|. (if shmTrunc flags then #{const O_TRUNC}
+       cflags4 <- return $ cflags3 .|. (if shmTrunc flags then Base.o_TRUNC
                                         else 0)
        withCAString name (shmOpen' cflags4)
     where shmOpen' cflags cname =
@@ -67,6 +66,7 @@ shmOpen name flags mode =
                        shm_open cname cflags mode
                  return $ Fd fd
 #else
+{-# WARNING shmOpen "System.Posix.SharedMem: shm_open: not available" #-}
 shmOpen = error "System.Posix.SharedMem:shm_open: not available"
 #endif
 
@@ -77,6 +77,7 @@ shmUnlink name = withCAString name shmUnlink'
     where shmUnlink' cname =
               throwErrnoIfMinus1_ "shmUnlink" $ shm_unlink cname
 #else
+{-# WARNING shmUnlink "System.Posix.SharedMem:shm_unlink: not available" #-}
 shmUnlink = error "System.Posix.SharedMem:shm_unlink: not available"
 #endif
 

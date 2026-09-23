@@ -24,13 +24,12 @@ import Haddock.Types
 import Haddock.Utils
 
 import Text.XHtml hiding ( name, p, quote )
-import qualified Data.Map as M
 import Data.List ( stripPrefix )
 
-import GHC hiding (LexicalFixity(..))
-import Name
-import RdrName
-import FastString (unpackFS)
+import GHC hiding (LexicalFixity(..), anchor)
+import GHC.Types.Name
+import GHC.Types.Name.Reader
+import GHC.Data.FastString (unpackFS)
 
 
 -- | Indicator of how to render a 'DocName' into 'Html'
@@ -57,8 +56,9 @@ ppUncheckedLink _ x = linkIdOcc' mdl (Just occ) << occHtml
     occHtml = toHtml (showWrapped (occNameString . snd) x) -- TODO: apply ppQualifyName
 
 -- The Bool indicates if it is to be rendered in infix notation
-ppLDocName :: Qualification -> Notation -> Located DocName -> Html
+ppLDocName :: Qualification -> Notation -> GenLocated l DocName -> Html
 ppLDocName qual notation (L _ d) = ppDocName qual notation True d
+
 
 ppDocName :: Qualification -> Notation -> Bool -> DocName -> Html
 ppDocName qual notation insertAnchors docName =
@@ -104,11 +104,6 @@ ppQualifyName qual notation name mdl =
         Just _       -> ppFullQualName notation mdl name
         -- some other module, D.x -> D.x
         Nothing      -> ppFullQualName notation mdl name
-    AliasedQual aliases localmdl ->
-      case (moduleString mdl == moduleString localmdl,
-            M.lookup mdl aliases) of
-        (False, Just alias) -> ppQualName notation alias name
-        _ -> ppName notation name
 
 
 ppFullQualName :: Notation -> Module -> Name -> Html
@@ -116,14 +111,17 @@ ppFullQualName notation mdl name = wrapInfix notation (getOccName name) qname
   where
     qname = toHtml $ moduleString mdl ++ '.' : getOccString name
 
-ppQualName :: Notation -> ModuleName -> Name -> Html
-ppQualName notation mdlName name = wrapInfix notation (getOccName name) qname
-  where
-    qname = toHtml $ moduleNameString mdlName ++ '.' : getOccString name
-
 ppName :: Notation -> Name -> Html
-ppName notation name = wrapInfix notation (getOccName name) $ toHtml (getOccString name)
-
+ppName notation name =
+  case m_pun of
+    Just str -> toHtml (unpackFS str)       -- use the punned form
+    Nothing  -> wrapInfix notation (getOccName name) $
+                toHtml (getOccString name)  -- use the original identifier
+  where
+    m_pun = case notation of
+      Raw    -> namePun_maybe name
+      Prefix -> namePun_maybe name
+      Infix  -> Nothing
 
 ppBinder :: Bool -> OccName -> Html
 ppBinder = ppBinderWith Prefix
@@ -147,14 +145,11 @@ ppBinder' notation n = wrapInfix notation n $ ppOccName n
 
 wrapInfix :: Notation -> OccName -> Html -> Html
 wrapInfix notation n = case notation of
-  Infix | is_star_kind -> id
-        | not is_sym -> quote
-  Prefix | is_star_kind -> id
-         | is_sym -> parens
+  Infix | not is_sym -> quote
+  Prefix | is_sym -> parens
   _ -> id
   where
     is_sym = isSymOcc n
-    is_star_kind = isTcOcc n && occNameString n == "*"
 
 linkId :: Module -> Maybe Name -> Html -> Html
 linkId mdl mbName = linkIdOcc mdl (fmap nameOccName mbName) True
@@ -186,9 +181,12 @@ ppModule mdl = anchor ! [href (moduleUrl mdl)]
                << toHtml (moduleString mdl)
 
 
-ppModuleRef :: ModuleName -> String -> Html
-ppModuleRef mdl ref = anchor ! [href (moduleHtmlFile' mdl ++ ref)]
-                      << toHtml (moduleNameString mdl)
+ppModuleRef :: Maybe Html -> ModuleName -> String -> Html
+ppModuleRef Nothing mdl ref = anchor ! [href (moduleHtmlFile' mdl ++ ref)]
+                              << toHtml (moduleNameString mdl)
+ppModuleRef (Just lbl) mdl ref = anchor ! [href (moduleHtmlFile' mdl ++ ref)]
+                                 << lbl
+
     -- NB: The ref parameter already includes the '#'.
     -- This function is only called from markupModule expanding a
     -- DocModule, which doesn't seem to be ever be used.

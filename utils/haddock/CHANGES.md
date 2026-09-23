@@ -1,3 +1,36 @@
+## Changes in 2.31.1
+
+  * Don't warn about missing link destinations for derived names (GHC #26114)
+
+  * Document instances from other packages (GHC #25147, #26079)
+
+  * Fix links to type operators (GHC #26032)
+
+  * Fix math parsing after certain characters (GHC #26034)
+
+  * Fix a panic with TypeData and TypeFamilies extensions (GHC #25739)
+
+## Changes in 2.28.0
+ * `hi-haddock` is integrated, which means docstrings are no longer extracted
+   through typchecked module results. Instead, docstrings are taken from Haskell
+   interface (`.hi`) files.
+
+ * Support qualified and unqualified names in `--ignore-link-symbol`.
+
+ * Add `--trace-args` flag which prints arguments to standard output. This is
+   useful for examining arguments passed when Haddock is invoked through `cabal
+   haddock`, as `cabal` uses temporary response files to pass arguments to
+   Haddock.
+
+ * Avoid recompilation due to changes in optimization flags.
+
+## Changes in 2.24.0
+
+ * Reify oversaturated data family instances correctly (#1103)
+
+ * Removed the majority of Haddock's possible `panic` routes through
+   the TTG refactor to make extension variants empty
+
 ## Changes in 2.23.0
 
  * "Linuwial" is the new default theme (#721, #782, #949)

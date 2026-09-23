@@ -10,12 +10,12 @@
 
 #include <stdio.h>
 
-#include "BeginPrivate.h"
 #include "Rts.h"
-
 #if defined(DEBUG)
 #include "Arena.h"
 #endif
+
+#include "BeginPrivate.h"
 
 #if defined(PROFILING)
 #define PROFILING_ONLY(s) s
@@ -24,7 +24,7 @@
 #endif
 
 void initProfiling  (void);
-void initProfiling2 (void);
+void refreshProfilingCCSs (void);
 void endProfiling   (void);
 void freeProfiling  (void);
 
@@ -53,6 +53,10 @@ bool ignoreCC (CostCentre const *cc);
 extern Arena *prof_arena;
 
 void debugCCS( CostCentreStack *ccs );
+#endif
+
+#if defined(THREADED_RTS)
+extern Mutex ccs_mutex;
 #endif
 
 #endif

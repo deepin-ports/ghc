@@ -1,10 +1,10 @@
-# Despite the name "package", this file contains the master list of
+# Despite the name "packages", this file contains the master list of
 # the *repositories* that make up GHC. It is parsed by
 # * boot
 # * rules/foreachLibrary.mk
 #
 # Some of this information is duplicated elsewhere in the build system:
-#    See Trac #3896
+#    See #3896
 # In particular when adding libraries to this file, you also need to add
 # the library to the SUBDIRS variable in libraries/Makefile so that they
 # actually get built
@@ -52,7 +52,6 @@ libraries/directory          -           -                               ssh://g
 libraries/filepath           -           -                               ssh://git@github.com/haskell/filepath.git
 libraries/haskeline          -           -                               https://github.com/judah/haskeline.git
 libraries/hpc                -           -                               -
-libraries/libiserv           -           -                               -
 libraries/mtl                -           -                               https://github.com/haskell/mtl.git
 libraries/parsec             -           -                               https://github.com/haskell/parsec.git
 libraries/pretty             -           -                               https://github.com/haskell/pretty.git
@@ -64,7 +63,8 @@ libraries/transformers       -           -                               https:/
 libraries/unix               -           -                               ssh://git@github.com/haskell/unix.git
 libraries/Win32              -           -                               https://github.com/haskell/win32.git
 libraries/xhtml              -           -                               https://github.com/haskell/xhtml.git
+libraries/exceptions         -           -                               https://github.com/ekmett/exceptions.git
 nofib                        nofib       -                               -
-libraries/parallel           extra       -                               ssh://git@github.com/haskell/parallel.git
+libraries/semaphore-compat   -           -                               -
 libraries/stm                -           -                               ssh://git@github.com/haskell/stm.git
 .                            -           ghc.git                         -

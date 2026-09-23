@@ -1,12 +1,9 @@
-{-# LANGUAGE ScopedTypeVariables, CPP, BangPatterns, RankNTypes #-}
-#if __GLASGOW_HASKELL__ == 700
--- This is needed as a workaround for an old bug in GHC 7.0.1 (Trac #4498)
-{-# LANGUAGE MonoPatBinds #-}
-#endif
-#if __GLASGOW_HASKELL__ >= 703
 {-# LANGUAGE Unsafe #-}
-#endif
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE NoMonoLocalBinds #-}
+
 {-# OPTIONS_HADDOCK not-home #-}
+
 -- | Copyright : (c) 2010 - 2011 Simon Meier
 -- License     : BSD3-style (see LICENSE)
 --
@@ -104,6 +101,7 @@ module Data.ByteString.Builder.Internal (
   , lazyByteString
 
   -- ** Execution
+  , toLazyByteString
   , toLazyByteStringWith
   , AllocationStrategy
   , safeStrategy
@@ -133,43 +131,27 @@ module Data.ByteString.Builder.Internal (
 ) where
 
 import           Control.Arrow (second)
+import           Control.DeepSeq (NFData(..))
+import           GHC.Exts (IsList(..))
 
-#if !(MIN_VERSION_base(4,11,0)) && MIN_VERSION_base(4,9,0)
-import           Data.Semigroup (Semigroup((<>)))
-#endif
-#if !(MIN_VERSION_base(4,8,0))
-import           Data.Monoid
-import           Control.Applicative (Applicative(..),(<$>))
-#endif
+import           Data.Semigroup (Semigroup(..))
+import           Data.List.NonEmpty (NonEmpty(..))
 
 import qualified Data.ByteString               as S
-import qualified Data.ByteString.Internal      as S
+import qualified Data.ByteString.Unsafe        as S
+import qualified Data.ByteString.Internal.Type as S
 import qualified Data.ByteString.Lazy.Internal as L
 import qualified Data.ByteString.Short.Internal as Sh
 
-#if __GLASGOW_HASKELL__ >= 611
 import qualified GHC.IO.Buffer as IO (Buffer(..), newByteBuffer)
 import           GHC.IO.Handle.Internals (wantWritableHandle, flushWriteBuffer)
 import           GHC.IO.Handle.Types (Handle__, haByteBuffer, haBufferMode)
-import           System.IO (hFlush, BufferMode(..))
+import           System.IO (hFlush, BufferMode(..), Handle)
 import           Data.IORef
-#else
-import qualified Data.ByteString.Lazy as L
-#endif
-import           System.IO (Handle)
 
-#if MIN_VERSION_base(4,4,0)
-#if MIN_VERSION_base(4,7,0)
 import           Foreign
-#else
-import           Foreign hiding (unsafeForeignPtrToPtr)
-#endif
 import           Foreign.ForeignPtr.Unsafe (unsafeForeignPtrToPtr)
 import           System.IO.Unsafe (unsafeDupablePerformIO)
-#else
-import           Foreign
-import           GHC.IO (unsafeDupablePerformIO)
-#endif
 
 ------------------------------------------------------------------------------
 -- Buffers
@@ -179,11 +161,22 @@ import           GHC.IO (unsafeDupablePerformIO)
 data BufferRange = BufferRange {-# UNPACK #-} !(Ptr Word8)  -- First byte of range
                                {-# UNPACK #-} !(Ptr Word8)  -- First byte /after/ range
 
+-- | @since 0.12.2.0
+instance NFData BufferRange where
+  rnf !_ = ()
+
 -- | A 'Buffer' together with the 'BufferRange' of free bytes. The filled
 -- space starts at offset 0 and ends at the first free byte.
 data Buffer = Buffer {-# UNPACK #-} !(ForeignPtr Word8)
                      {-# UNPACK #-} !BufferRange
 
+-- | Like the @NFData@ instance for @StrictByteString@,
+-- this does not force the @ForeignPtrContents@ field
+-- of the underlying @ForeignPtr@.
+--
+-- @since 0.12.2.0
+instance NFData Buffer where
+  rnf !_ = ()
 
 -- | Combined size of the filled and free space in the buffer.
 {-# INLINE bufferSize #-}
@@ -199,17 +192,17 @@ newBuffer size = do
     let pbuf = unsafeForeignPtrToPtr fpbuf
     return $! Buffer fpbuf (BufferRange pbuf (pbuf `plusPtr` size))
 
--- | Convert the filled part of a 'Buffer' to a strict 'S.ByteString'.
+-- | Convert the filled part of a 'Buffer' to a 'S.StrictByteString'.
 {-# INLINE byteStringFromBuffer #-}
-byteStringFromBuffer :: Buffer -> S.ByteString
+byteStringFromBuffer :: Buffer -> S.StrictByteString
 byteStringFromBuffer (Buffer fpbuf (BufferRange op _)) =
-    S.PS fpbuf 0 (op `minusPtr` unsafeForeignPtrToPtr fpbuf)
+    S.BS fpbuf (op `minusPtr` unsafeForeignPtrToPtr fpbuf)
 
--- | Prepend the filled part of a 'Buffer' to a lazy 'L.ByteString'
+-- | Prepend the filled part of a 'Buffer' to a 'L.LazyByteString'
 -- trimming it if necessary.
 {-# INLINE trimmedChunkFromBuffer #-}
 trimmedChunkFromBuffer :: AllocationStrategy -> Buffer
-                       -> L.ByteString -> L.ByteString
+                       -> L.LazyByteString -> L.LazyByteString
 trimmedChunkFromBuffer (AllocationStrategy _ _ trim) buf k
   | S.null bs                           = k
   | trim (S.length bs) (bufferSize buf) = L.Chunk (S.copy bs) k
@@ -230,33 +223,33 @@ trimmedChunkFromBuffer (AllocationStrategy _ _ trim) buf k
 data ChunkIOStream a =
        Finished Buffer a
        -- ^ The partially filled last buffer together with the result.
-     | Yield1 S.ByteString (IO (ChunkIOStream a))
-       -- ^ Yield a /non-empty/ strict 'S.ByteString'.
+     | Yield1 S.StrictByteString (IO (ChunkIOStream a))
+       -- ^ Yield a /non-empty/ 'S.StrictByteString'.
 
 -- | A smart constructor for yielding one chunk that ignores the chunk if
 -- it is empty.
 {-# INLINE yield1 #-}
-yield1 :: S.ByteString -> IO (ChunkIOStream a) -> IO (ChunkIOStream a)
+yield1 :: S.StrictByteString -> IO (ChunkIOStream a) -> IO (ChunkIOStream a)
 yield1 bs cios | S.null bs = cios
                | otherwise = return $ Yield1 bs cios
 
--- | Convert a @'ChunkIOStream' ()@ to a lazy 'L.ByteString' using
+-- | Convert a @'ChunkIOStream' ()@ to a 'L.LazyByteString' using
 -- 'unsafeDupablePerformIO'.
 {-# INLINE ciosUnitToLazyByteString #-}
 ciosUnitToLazyByteString :: AllocationStrategy
-                         -> L.ByteString -> ChunkIOStream () -> L.ByteString
+                         -> L.LazyByteString -> ChunkIOStream () -> L.LazyByteString
 ciosUnitToLazyByteString strategy k = go
   where
     go (Finished buf _) = trimmedChunkFromBuffer strategy buf k
     go (Yield1 bs io)   = L.Chunk bs $ unsafeDupablePerformIO (go <$> io)
 
 -- | Convert a 'ChunkIOStream' to a lazy tuple of the result and the written
--- 'L.ByteString' using 'unsafeDupablePerformIO'.
+-- 'L.LazyByteString' using 'unsafeDupablePerformIO'.
 {-# INLINE ciosToLazyByteString #-}
 ciosToLazyByteString :: AllocationStrategy
-                     -> (a -> (b, L.ByteString))
+                     -> (a -> (b, L.LazyByteString))
                      -> ChunkIOStream a
-                     -> (b, L.ByteString)
+                     -> (b, L.LazyByteString)
 ciosToLazyByteString strategy k =
     go
   where
@@ -282,7 +275,7 @@ data BuildSignal a =
                      (BuildStep a)
   | InsertChunk
       {-# UNPACK #-} !(Ptr Word8)
-                     S.ByteString
+                     S.StrictByteString
                      (BuildStep a)
 
 -- | Signal that the current 'BuildStep' is done and has computed a value.
@@ -307,16 +300,16 @@ bufferFull :: Int
 bufferFull = BufferFull
 
 
--- | Signal that a 'S.ByteString' chunk should be inserted directly.
+-- | Signal that a 'S.StrictByteString' chunk should be inserted directly.
 {-# INLINE insertChunk #-}
 insertChunk :: Ptr Word8
             -- ^ Next free byte in current 'BufferRange'
-            -> S.ByteString
+            -> S.StrictByteString
             -- ^ Chunk to insert.
             -> BuildStep a
             -- ^ 'BuildStep' to run on next 'BufferRange'
             -> BuildSignal a
-insertChunk op bs = InsertChunk op bs
+insertChunk = InsertChunk
 
 
 -- | Fill a 'BufferRange' using a 'BuildStep'.
@@ -328,7 +321,7 @@ fillWithBuildStep
     -- ^ Handling the 'done' signal
     -> (Ptr Word8 -> Int -> BuildStep a -> IO b)
     -- ^ Handling the 'bufferFull' signal
-    -> (Ptr Word8 -> S.ByteString -> BuildStep a -> IO b)
+    -> (Ptr Word8 -> S.StrictByteString -> BuildStep a -> IO b)
     -- ^ Handling the 'insertChunk' signal
     -> BufferRange
     -- ^ Buffer range to fill.
@@ -364,7 +357,7 @@ builder :: (forall r. BuildStep r -> BuildStep r)
         -- multiple times with equally sized 'BufferRange's must result in the
         -- same sequence of bytes being written. If you need mutable state,
         -- then you must allocate it anew upon each call of this function.
-        -- Moroever, this function must call the continuation once its done.
+        -- Moreover, this function must call the continuation once its done.
         -- Otherwise, concatenation of 'Builder's does not work. Finally, this
         -- function must write to all bytes that it claims it has written.
         -- Otherwise, the resulting 'Builder' is not guaranteed to be
@@ -374,7 +367,7 @@ builder = Builder
 
 -- | The final build step that returns the 'done' signal.
 finalBuildStep :: BuildStep ()
-finalBuildStep !(BufferRange op _) = return $ Done op ()
+finalBuildStep (BufferRange op _) = return $ Done op ()
 
 -- | Run a 'Builder' with the 'finalBuildStep'.
 {-# INLINE runBuilder #-}
@@ -394,11 +387,14 @@ runBuilderWith (Builder b) = b
 -- only exported for use in rewriting rules. Use 'mempty' otherwise.
 {-# INLINE[1] empty #-}
 empty :: Builder
-empty = Builder (\cont -> (\range -> cont range))
+empty = Builder (\k br -> k br)
 -- This eta expansion (hopefully) allows GHC to worker-wrapper the
 -- 'BufferRange' in the 'empty' base case of loops (since
 -- worker-wrapper requires (TODO: verify this) that all paths match
 -- against the wrapped argument.
+--
+-- Do not use ($), which has arity 1 since base-4.19.
+-- See also https://gitlab.haskell.org/ghc/ghc/-/issues/23822
 
 -- | Concatenate two 'Builder's. This function is only exported for use in rewriting
 -- rules. Use 'mappend' otherwise.
@@ -406,30 +402,48 @@ empty = Builder (\cont -> (\range -> cont range))
 append :: Builder -> Builder -> Builder
 append (Builder b1) (Builder b2) = Builder $ b1 . b2
 
-#if MIN_VERSION_base(4,9,0)
+stimesBuilder :: Integral t => t -> Builder -> Builder
+{-# INLINABLE stimesBuilder #-}
+stimesBuilder n b
+  | n >= 0 = go n
+  | otherwise = stimesNegativeErr
+  where go 0 = empty
+        go k = b `append` go (k - 1)
+
+stimesNegativeErr :: Builder
+-- See Note [Float error calls out of INLINABLE things]
+-- in Data.ByteString.Internal.Type
+stimesNegativeErr
+  = errorWithoutStackTrace "stimes @Builder: non-negative multiplier expected"
+
 instance Semigroup Builder where
   {-# INLINE (<>) #-}
   (<>) = append
-#endif
+  sconcat (b:|bs) = b <> foldr mappend mempty bs
+  {-# INLINE stimes #-}
+  stimes = stimesBuilder
 
 instance Monoid Builder where
   {-# INLINE mempty #-}
   mempty = empty
   {-# INLINE mappend #-}
-#if MIN_VERSION_base(4,9,0)
   mappend = (<>)
-#else
-  mappend = append
-#endif
   {-# INLINE mconcat #-}
   mconcat = foldr mappend mempty
+
+-- | For long or infinite lists use 'fromList' because it uses 'LazyByteString' otherwise use 'fromListN' which uses 'StrictByteString'.
+instance IsList Builder where
+  type Item Builder = Word8
+  fromList = lazyByteString . fromList
+  fromListN n = byteString . fromListN n
+  toList = toList . toLazyByteString
 
 -- | Flush the current buffer. This introduces a chunk boundary.
 {-# INLINE flush #-}
 flush :: Builder
 flush = builder step
   where
-    step k !(BufferRange op _) = return $ insertChunk op S.empty k
+    step k (BufferRange op _) = return $ insertChunk op S.empty k
 
 
 ------------------------------------------------------------------------------
@@ -443,10 +457,11 @@ flush = builder step
 --
 -- 'Put's are a generalization of 'Builder's. The typical use case is the
 -- implementation of an encoding that might fail (e.g., an interface to the
--- 'zlib' compression library or the conversion from Base64 encoded data to
+-- <https://hackage.haskell.org/package/zlib zlib>
+-- compression library or the conversion from Base64 encoded data to
 -- 8-bit data). For a 'Builder', the only way to handle and report such a
 -- failure is ignore it or call 'error'.  In contrast, 'Put' actions are
--- expressive enough to allow reportng and handling such a failure in a pure
+-- expressive enough to allow reporting and handling such a failure in a pure
 -- fashion.
 --
 -- @'Put' ()@ actions are isomorphic to 'Builder's. The functions 'putBuilder'
@@ -469,7 +484,7 @@ put :: (forall r. (a -> BuildStep r) -> BuildStep r)
     -- multiple times with equally sized 'BufferRange's must result in the
     -- same sequence of bytes being written and the same value being
     -- computed. If you need mutable state, then you must allocate it anew
-    -- upon each call of this function. Moroever, this function must call
+    -- upon each call of this function. Moreover, this function must call
     -- the continuation once its done. Otherwise, monadic sequencing of
     -- 'Put's does not work. Finally, this function must write to all bytes
     -- that it claims it has written. Otherwise, the resulting 'Put' is
@@ -487,7 +502,7 @@ runPut :: Put a       -- ^ Put to run
 runPut (Put p) = p $ \x (BufferRange op _) -> return $ Done op x
 
 instance Functor Put where
-  fmap f p = Put $ \k -> unPut p (\x -> k (f x))
+  fmap f p = Put $ \k -> unPut p (k . f)
   {-# INLINE fmap #-}
 
 -- | Synonym for '<*' from 'Applicative'; used in rewriting rules.
@@ -505,7 +520,7 @@ instance Applicative Put where
   {-# INLINE pure #-}
   pure x = Put $ \k -> k x
   {-# INLINE (<*>) #-}
-  Put f <*> Put a = Put $ \k -> f (\f' -> a (\a' -> k (f' a')))
+  Put f <*> Put a = Put $ \k -> f (\f' -> a (k . f'))
   {-# INLINE (<*) #-}
   (<*) = ap_l
   {-# INLINE (*>) #-}
@@ -530,7 +545,7 @@ putBuilder (Builder b) = Put $ \k -> b (k ())
 -- | Convert a @'Put' ()@ action to a 'Builder'.
 {-# INLINE fromPut #-}
 fromPut :: Put () -> Builder
-fromPut (Put p) = Builder $ \k -> p (\_ -> k)
+fromPut (Put p) = Builder $ \k -> p (const k)
 
 -- We rewrite consecutive uses of 'putBuilder' such that the append of the
 -- involved 'Builder's is used. This can significantly improve performance,
@@ -612,7 +627,6 @@ putLiftIO io = put $ \k br -> io >>= (`k` br)
 -- buffer is too small to execute one step of the 'Put' action, then
 -- it is replaced with a large enough buffer.
 hPut :: forall a. Handle -> Put a -> IO a
-#if __GLASGOW_HASKELL__ >= 611
 hPut h p = do
     fillHandle 1 (runPut p)
   where
@@ -626,9 +640,9 @@ hPut h p = do
         --
         --   1. GHC.IO.Handle.Internals mentions in "Note [async]" that
         --      we should never do any side-effecting operations before
-        --      an interuptible operation that may raise an async. exception
+        --      an interruptible operation that may raise an async. exception
         --      as long as we are inside 'wantWritableHandle' and the like.
-        --      We possibly run the interuptible 'flushWriteBuffer' right at
+        --      We possibly run the interruptible 'flushWriteBuffer' right at
         --      the start of 'fillHandle', hence entering it a second time is
         --      not safe, as it could lead to a 'BuildStep' being run twice.
         --
@@ -659,12 +673,7 @@ hPut h p = do
 
               | freeSpace buf < minFree = flushWriteBuffer h_
               | otherwise               =
-#if __GLASGOW_HASKELL__ >= 613
                                           return ()
-#else
-                                          -- required for ghc-6.12
-                                          flushWriteBuffer h_
-#endif
 
             fillBuffer buf
               | freeSpace buf < minFree =
@@ -705,7 +714,7 @@ hPut h p = do
                     updateBufR op'
                     return $ fillHandle minSize nextStep
                     -- 'fillHandle' will flush the buffer (provided there is
-                    -- really less than 'minSize' space left) before executing
+                    -- really less than @minSize@ space left) before executing
                     -- the 'nextStep'.
 
                 insertChunkH op' bs nextStep = do
@@ -713,18 +722,9 @@ hPut h p = do
                     return $ do
                         S.hPut h bs
                         fillHandle 1 nextStep
-#else
-hPut h p =
-    go =<< buildStepToCIOS strategy (runPut p)
-  where
-    strategy = untrimmedStrategy L.smallChunkSize L.defaultChunkSize
-
-    go (Finished buf x) = S.hPut h (byteStringFromBuffer buf) >> return x
-    go (Yield1 bs io)   = S.hPut h bs >> io >>= go
-#endif
 
 -- | Execute a 'Put' and return the computed result and the bytes
--- written during the computation as a lazy 'L.ByteString'.
+-- written during the computation as a 'L.LazyByteString'.
 --
 -- This function is strict in the computed result and lazy in the writing of
 -- the bytes. For example, given
@@ -753,15 +753,15 @@ hPut h p =
 -- @
 --type DecodingState = ...
 --
---decodeBase64 :: 'S.ByteString' -> DecodingState -> 'Put' (Maybe DecodingState)
+--decodeBase64 :: 'S.StrictByteString' -> DecodingState -> 'Put' (Maybe DecodingState)
 --decodeBase64 = ...
 -- @
 --
--- The above function takes a strict 'S.ByteString' supposed to represent
+-- The above function takes a 'S.StrictByteString' supposed to represent
 -- Base64 encoded data and the current decoding state.
 -- It writes the decoded bytes as the side-effect of the 'Put' and returns the
--- new decoding state, if the decoding of all data in the 'S.ByteString' was
--- successful. The checking if the strict 'S.ByteString' represents Base64
+-- new decoding state, if the decoding of all data in the 'S.StrictByteString' was
+-- successful. The checking if the 'S.StrictByteString' represents Base64
 -- encoded data and the actual decoding are fused. This makes the common case,
 -- where all data represents Base64 encoded data, more efficient. It also
 -- implies that all data must be decoded before the final decoding
@@ -771,10 +771,10 @@ hPut h p =
 {-# NOINLINE putToLazyByteString #-}
 putToLazyByteString
     :: Put a              -- ^ 'Put' to execute
-    -> (a, L.ByteString)  -- ^ Result and lazy 'L.ByteString'
+    -> (a, L.LazyByteString)  -- ^ Result and 'L.LazyByteString'
                           -- written as its side-effect
 putToLazyByteString = putToLazyByteStringWith
-    (safeStrategy L.smallChunkSize L.defaultChunkSize) (\x -> (x, L.Empty))
+    (safeStrategy L.smallChunkSize L.defaultChunkSize) (, L.Empty)
 
 
 -- | Execute a 'Put' with a buffer-allocation strategy and a continuation. For
@@ -789,13 +789,13 @@ putToLazyByteString = putToLazyByteStringWith
 putToLazyByteStringWith
     :: AllocationStrategy
        -- ^ Buffer allocation strategy to use
-    -> (a -> (b, L.ByteString))
+    -> (a -> (b, L.LazyByteString))
        -- ^ Continuation to use for computing the final result and the tail of
        -- its side-effect (the written bytes).
     -> Put a
        -- ^ 'Put' to execute
-    -> (b, L.ByteString)
-       -- ^ Resulting lazy 'L.ByteString'
+    -> (b, L.LazyByteString)
+       -- ^ Resulting 'L.LazyByteString'
 putToLazyByteStringWith strategy k p =
     ciosToLazyByteString strategy k $ unsafeDupablePerformIO $
         buildStepToCIOS strategy (runPut p)
@@ -809,7 +809,8 @@ putToLazyByteStringWith strategy k p =
 -- Raw memory
 -------------
 
--- | Ensure that there are at least 'n' free bytes for the following 'Builder'.
+-- | @'ensureFree' n@ ensures that there are at least @n@ free bytes
+-- for the following 'Builder'.
 {-# INLINE ensureFree #-}
 ensureFree :: Int -> Builder
 ensureFree minFree =
@@ -819,84 +820,132 @@ ensureFree minFree =
       | ope `minusPtr` op < minFree = return $ bufferFull minFree op k
       | otherwise                   = k br
 
--- | Copy the bytes from a 'BufferRange' into the output stream.
-wrappedBytesCopyStep :: BufferRange  -- ^ Input 'BufferRange'.
+-- | Copy the bytes from a 'S.StrictByteString' into the output stream.
+wrappedBytesCopyStep :: S.StrictByteString  -- ^ Input 'S.StrictByteString'.
                      -> BuildStep a -> BuildStep a
-wrappedBytesCopyStep !(BufferRange ip0 ipe) k =
-    go ip0
+-- See Note [byteStringCopyStep and wrappedBytesCopyStep]
+wrappedBytesCopyStep bs0 k =
+    go bs0
   where
-    go !ip !(BufferRange op ope)
+    go !bs@(S.BS ifp inpRemaining) (BufferRange op ope)
       | inpRemaining <= outRemaining = do
-          copyBytes op ip inpRemaining
+          S.unsafeWithForeignPtr ifp $ \ip -> copyBytes op ip inpRemaining
           let !br' = BufferRange (op `plusPtr` inpRemaining) ope
           k br'
       | otherwise = do
-          copyBytes op ip outRemaining
-          let !ip' = ip `plusPtr` outRemaining
-          return $ bufferFull 1 ope (go ip')
+          S.unsafeWithForeignPtr ifp $ \ip -> copyBytes op ip outRemaining
+          let !bs' = S.unsafeDrop outRemaining bs
+          return $ bufferFull 1 ope (go bs')
       where
         outRemaining = ope `minusPtr` op
-        inpRemaining = ipe `minusPtr` ip
 
 
 -- Strict ByteStrings
 ------------------------------------------------------------------------------
 
 
--- | Construct a 'Builder' that copies the strict 'S.ByteString's, if it is
+-- | Construct a 'Builder' that copies the 'S.StrictByteString's, if it is
 -- smaller than the treshold, and inserts it directly otherwise.
 --
--- For example, @byteStringThreshold 1024@ copies strict 'S.ByteString's whose size
+-- For example, @byteStringThreshold 1024@ copies 'S.StrictByteString's whose size
 -- is less or equal to 1kb, and inserts them directly otherwise. This implies
--- that the average chunk-size of the generated lazy 'L.ByteString' may be as
+-- that the average chunk-size of the generated 'L.LazyByteString' may be as
 -- low as 513 bytes, as there could always be just a single byte between the
--- directly inserted 1025 byte, strict 'S.ByteString's.
+-- directly inserted 1025 byte, 'S.StrictByteString's.
 --
 {-# INLINE byteStringThreshold #-}
-byteStringThreshold :: Int -> S.ByteString -> Builder
+byteStringThreshold :: Int -> S.StrictByteString -> Builder
 byteStringThreshold maxCopySize =
     \bs -> builder $ step bs
   where
-    step !bs@(S.PS _ _ len) !k br@(BufferRange !op _)
+    step bs@(S.BS _ len) k br@(BufferRange !op _)
       | len <= maxCopySize = byteStringCopyStep bs k br
       | otherwise          = return $ insertChunk op bs k
 
--- | Construct a 'Builder' that copies the strict 'S.ByteString'.
+-- | Construct a 'Builder' that copies the 'S.StrictByteString'.
 --
 -- Use this function to create 'Builder's from smallish (@<= 4kb@)
--- 'S.ByteString's or if you need to guarantee that the 'S.ByteString' is not
+-- 'S.StrictByteString's or if you need to guarantee that the 'S.StrictByteString' is not
 -- shared with the chunks generated by the 'Builder'.
 --
 {-# INLINE byteStringCopy #-}
-byteStringCopy :: S.ByteString -> Builder
+byteStringCopy :: S.StrictByteString -> Builder
 byteStringCopy = \bs -> builder $ byteStringCopyStep bs
 
-{-# INLINE byteStringCopyStep #-}
-byteStringCopyStep :: S.ByteString -> BuildStep a -> BuildStep a
-byteStringCopyStep (S.PS ifp ioff isize) !k0 br0@(BufferRange op ope)
-    -- Ensure that the common case is not recursive and therefore yields
-    -- better code.
-    | op' <= ope = do copyBytes op ip isize
-                      touchForeignPtr ifp
-                      k0 (BufferRange op' ope)
-    | otherwise  = do wrappedBytesCopyStep (BufferRange ip ipe) k br0
-  where
-    op'  = op `plusPtr` isize
-    ip   = unsafeForeignPtrToPtr ifp `plusPtr` ioff
-    ipe  = ip `plusPtr` isize
-    k br = do touchForeignPtr ifp  -- input consumed: OK to release here
-              k0 br
+{-
+Note [byteStringCopyStep and wrappedBytesCopyStep]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+A Builder that copies the contents of an arbitrary ByteString needs a
+recursive loop, since the bytes to be copied might not fit into the
+first few chunk buffers provided by the driver.  That loop is
+implemented in 'wrappedBytesCopyStep'.  But we also have a
+non-recursive wrapper, 'byteStringCopyStep', which performs exactly
+the first iteration of that loop, falling back to 'wrappedBytesCopyStep'
+if a chunk boundary is reached before the entire ByteString is copied.
 
--- | Construct a 'Builder' that always inserts the strict 'S.ByteString'
+This is very strange!  Why do we do this?  Perhaps mostly for
+historical reasons.  But sadly, changing this to use a single
+recursive loop regresses the benchmark 'foldMap byteStringCopy' by
+about 30% as of 2024, in one of two ways:
+
+ 1. If the continuation 'k' is taken as an argument of the
+    inner copying loop, it remains an unknown function call.
+    So for each bytestring copied, that continuation must be
+    entered later via a gen-apply function, which incurs dozens
+    of cycles of extra overhead.
+ 2. If the continuation 'k' is lifted out of the inner copying
+    loop, it becomes a free variable.  And after a bit of
+    inlining, there will be no unknown function call.  But, if
+    the continuation function has any free variables, these
+    become free variables of the inner copying loop, which
+    prevent the loop from floating out.  (In the actual
+    benchmark, the tail of the list of bytestrings to copy is
+    such a free variable of the continuation.)  As a result,
+    the inner copying loop becomes a function closure object
+    rather than a top-level function.  And that means a new
+    inner-copying-loop function-closure-object must be
+    allocated on the heap for every bytestring copied, which
+    is expensive.
+
+    In theory, GHC's late-lambda-lifting pass can clean this up by
+    abstracting over the problematic free variables.  But for some
+    unknown reason (perhaps a bug in ghc-9.10.1) this optimization
+    does not fire on the relevant benchmark code, even with a
+    sufficiently high value of -fstg-lift-lams-rec-args.
+
+
+
+Alternatively, it is possible to avoid recursion altogether by
+requesting that the next chunk be large enough to accommodate the
+entire remainder of the input when a chunk boundary is reached.
+But:
+ * For very large ByteStrings, this may incur unwanted latency.
+ * Large next-chunk-size requests have caused breakage downstream
+   in the past.  See also https://github.com/yesodweb/wai/issues/894
+-}
+
+{-# INLINE byteStringCopyStep #-}
+byteStringCopyStep :: S.StrictByteString -> BuildStep a -> BuildStep a
+-- See Note [byteStringCopyStep and wrappedBytesCopyStep]
+byteStringCopyStep bs@(S.BS ifp isize) k br@(BufferRange op ope)
+    | isize <= osize = do
+        S.unsafeWithForeignPtr ifp $ \ip -> copyBytes op ip isize
+        k (BufferRange op' ope)
+    | otherwise  = wrappedBytesCopyStep bs k br
+  where
+    osize = ope `minusPtr` op
+    op'  = op `plusPtr` isize
+
+-- | Construct a 'Builder' that always inserts the 'S.StrictByteString'
 -- directly as a chunk.
 --
 -- This implies flushing the output buffer, even if it contains just
 -- a single byte. You should therefore use 'byteStringInsert' only for large
--- (@> 8kb@) 'S.ByteString's. Otherwise, the generated chunks are too
+-- (@> 8kb@) 'S.StrictByteString's. Otherwise, the generated chunks are too
 -- fragmented to be processed efficiently afterwards.
 --
 {-# INLINE byteStringInsert #-}
-byteStringInsert :: S.ByteString -> Builder
+byteStringInsert :: S.StrictByteString -> Builder
 byteStringInsert =
     \bs -> builder $ \k (BufferRange op _) -> return $ insertChunk op bs k
 
@@ -916,7 +965,7 @@ shortByteStringCopyStep :: Sh.ShortByteString  -- ^ Input 'SH.ShortByteString'.
 shortByteStringCopyStep !sbs k =
     go 0 (Sh.length sbs)
   where
-    go !ip !ipe !(BufferRange op ope)
+    go !ip !ipe (BufferRange op ope)
       | inpRemaining <= outRemaining = do
           Sh.copyToPtr sbs ip op inpRemaining
           let !br' = BufferRange (op `plusPtr` inpRemaining) ope
@@ -934,47 +983,47 @@ shortByteStringCopyStep !sbs k =
 ------------------------------------------------------------------------------
 
 -- | Construct a 'Builder' that uses the thresholding strategy of 'byteStringThreshold'
--- for each chunk of the lazy 'L.ByteString'.
+-- for each chunk of the 'L.LazyByteString'.
 --
 {-# INLINE lazyByteStringThreshold #-}
-lazyByteStringThreshold :: Int -> L.ByteString -> Builder
+lazyByteStringThreshold :: Int -> L.LazyByteString -> Builder
 lazyByteStringThreshold maxCopySize =
     L.foldrChunks (\bs b -> byteStringThreshold maxCopySize bs `mappend` b) mempty
     -- TODO: We could do better here. Currently, Large, Small, Large, leads to
     -- an unnecessary copy of the 'Small' chunk.
 
--- | Construct a 'Builder' that copies the lazy 'L.ByteString'.
+-- | Construct a 'Builder' that copies the 'L.LazyByteString'.
 --
 {-# INLINE lazyByteStringCopy #-}
-lazyByteStringCopy :: L.ByteString -> Builder
+lazyByteStringCopy :: L.LazyByteString -> Builder
 lazyByteStringCopy =
     L.foldrChunks (\bs b -> byteStringCopy bs `mappend` b) mempty
 
--- | Construct a 'Builder' that inserts all chunks of the lazy 'L.ByteString'
+-- | Construct a 'Builder' that inserts all chunks of the 'L.LazyByteString'
 -- directly.
 --
 {-# INLINE lazyByteStringInsert #-}
-lazyByteStringInsert :: L.ByteString -> Builder
+lazyByteStringInsert :: L.LazyByteString -> Builder
 lazyByteStringInsert =
     L.foldrChunks (\bs b -> byteStringInsert bs `mappend` b) mempty
 
--- | Create a 'Builder' denoting the same sequence of bytes as a strict
--- 'S.ByteString'.
--- The 'Builder' inserts large 'S.ByteString's directly, but copies small ones
+-- | Create a 'Builder' denoting the same sequence of bytes as a
+-- 'S.StrictByteString'.
+-- The 'Builder' inserts large 'S.StrictByteString's directly, but copies small ones
 -- to ensure that the generated chunks are large on average.
 --
 {-# INLINE byteString #-}
-byteString :: S.ByteString -> Builder
+byteString :: S.StrictByteString -> Builder
 byteString = byteStringThreshold maximalCopySize
 
 -- | Create a 'Builder' denoting the same sequence of bytes as a lazy
--- 'L.ByteString'.
--- The 'Builder' inserts large chunks of the lazy 'L.ByteString' directly,
+-- 'L.LazyByteString'.
+-- The 'Builder' inserts large chunks of the 'L.LazyByteString' directly,
 -- but copies small ones to ensure that the generated chunks are large on
 -- average.
 --
 {-# INLINE lazyByteString #-}
-lazyByteString :: L.ByteString -> Builder
+lazyByteString :: L.LazyByteString -> Builder
 lazyByteString = lazyByteStringThreshold maximalCopySize
 -- FIXME: also insert the small chunk for [large,small,large] directly.
 -- Perhaps it makes even sense to concatenate the small chunks in
@@ -982,7 +1031,7 @@ lazyByteString = lazyByteStringThreshold maximalCopySize
 -- unnecessary buffer spilling. Hmm, but that uncontrollably increases latency
 -- => no good!
 
--- | The maximal size of a 'S.ByteString' that is copied.
+-- | The maximal size of a 'S.StrictByteString' that is copied.
 -- @2 * 'L.smallChunkSize'@ to guarantee that on average a chunk is of
 -- 'L.smallChunkSize'.
 maximalCopySize :: Int
@@ -993,14 +1042,6 @@ maximalCopySize = 2 * L.smallChunkSize
 ------------------------------------------------------------------------------
 
 -- | A buffer allocation strategy for executing 'Builder's.
-
--- The strategy
---
--- > 'AllocationStrategy' firstBufSize bufSize trim
---
--- states that the first buffer is of size @firstBufSize@, all following buffers
--- are of size @bufSize@, and a buffer of size @n@ filled with @k@ bytes should
--- be trimmed iff @trim k n@ is 'True'.
 data AllocationStrategy = AllocationStrategy
          (Maybe (Buffer, Int) -> IO Buffer)
          {-# UNPACK #-} !Int
@@ -1011,11 +1052,20 @@ data AllocationStrategy = AllocationStrategy
 {-# INLINE customStrategy #-}
 customStrategy
   :: (Maybe (Buffer, Int) -> IO Buffer)
-     -- ^ Buffer allocation function. If 'Nothing' is given, then a new first
-     -- buffer should be allocated. If @'Just' (oldBuf, minSize)@ is given,
-     -- then a buffer with minimal size 'minSize' must be returned. The
-     -- strategy may reuse the 'oldBuffer', if it can guarantee that this
-     -- referentially transparent and 'oldBuffer' is large enough.
+     -- ^ Buffer allocation function.
+     --
+     -- * If 'Nothing' is given, then a new first buffer should be allocated.
+     --
+     -- * If @'Just' (oldBuf, minSize)@ is given, then a buffer with minimal
+     -- size @minSize@ must be returned. The strategy may reuse @oldBuf@ only if
+     -- @oldBuf@ is large enough and the consumer can guarantee that this will
+     -- not result in a violation of referential transparency.
+     --
+     -- /Warning:/ for multithreaded programs, it is generally unsafe to reuse
+     -- buffers when using the consumers of 'Builder' in this package. For
+     -- example, if 'toLazyByteStringWith' is called with an
+     --  'AllocationStrategy' that reuses buffers, evaluating the result by
+     -- multiple threads simultaneously may lead to corrupted output.
   -> Int
      -- ^ Default buffer size.
   -> (Int -> Int -> Bool)
@@ -1029,7 +1079,7 @@ customStrategy = AllocationStrategy
 sanitize :: Int -> Int
 sanitize = max (sizeOf (undefined :: Int))
 
--- | Use this strategy for generating lazy 'L.ByteString's whose chunks are
+-- | Use this strategy for generating 'L.LazyByteString's whose chunks are
 -- discarded right after they are generated. For example, if you just generate
 -- them to write them to a network socket.
 {-# INLINE untrimmedStrategy #-}
@@ -1046,7 +1096,7 @@ untrimmedStrategy firstSize bufSize =
     nextBuffer (Just (_, minSize)) = newBuffer minSize
 
 
--- | Use this strategy for generating lazy 'L.ByteString's whose chunks are
+-- | Use this strategy for generating 'L.LazyByteString's whose chunks are
 -- likely to survive one garbage collection. This strategy trims buffers
 -- that are filled less than half in order to avoid spilling too much memory.
 {-# INLINE safeStrategy #-}
@@ -1063,43 +1113,51 @@ safeStrategy firstSize bufSize =
     nextBuffer Nothing             = newBuffer $ sanitize firstSize
     nextBuffer (Just (_, minSize)) = newBuffer minSize
 
+-- | Execute a 'Builder' and return the generated chunks as a 'L.LazyByteString'.
+-- The work is performed lazy, i.e., only when a chunk of the 'L.LazyByteString'
+-- is forced.
+{-# NOINLINE toLazyByteString #-} -- ensure code is shared
+toLazyByteString :: Builder -> L.LazyByteString
+toLazyByteString = toLazyByteStringWith
+    (safeStrategy L.smallChunkSize L.defaultChunkSize) L.Empty
+
 -- | /Heavy inlining./ Execute a 'Builder' with custom execution parameters.
 --
 -- This function is inlined despite its heavy code-size to allow fusing with
 -- the allocation strategy. For example, the default 'Builder' execution
--- function 'toLazyByteString' is defined as follows.
+-- function 'Data.ByteString.Builder.Internal.toLazyByteString' is defined as follows.
 --
 -- @
 -- {-\# NOINLINE toLazyByteString \#-}
 -- toLazyByteString =
---   toLazyByteStringWith ('safeStrategy' 'L.smallChunkSize' 'L.defaultChunkSize') L.empty
+--   toLazyByteStringWith ('safeStrategy' 'L.smallChunkSize' 'L.defaultChunkSize') L.Empty
 -- @
 --
--- where @L.empty@ is the zero-length lazy 'L.ByteString'.
+-- where @L.Empty@ is the zero-length 'L.LazyByteString'.
 --
--- In most cases, the parameters used by 'toLazyByteString' give good
--- performance. A sub-performing case of 'toLazyByteString' is executing short
+-- In most cases, the parameters used by 'Data.ByteString.Builder.toLazyByteString' give good
+-- performance. A sub-performing case of 'Data.ByteString.Builder.toLazyByteString' is executing short
 -- (<128 bytes) 'Builder's. In this case, the allocation overhead for the first
 -- 4kb buffer and the trimming cost dominate the cost of executing the
 -- 'Builder'. You can avoid this problem using
 --
--- >toLazyByteStringWith (safeStrategy 128 smallChunkSize) L.empty
+-- >toLazyByteStringWith (safeStrategy 128 smallChunkSize) L.Empty
 --
 -- This reduces the allocation and trimming overhead, as all generated
--- 'L.ByteString's fit into the first buffer and there is no trimming
+-- 'L.LazyByteString's fit into the first buffer and there is no trimming
 -- required, if more than 64 bytes and less than 128 bytes are written.
 --
 {-# INLINE toLazyByteStringWith #-}
 toLazyByteStringWith
     :: AllocationStrategy
        -- ^ Buffer allocation strategy to use
-    -> L.ByteString
-       -- ^ Lazy 'L.ByteString' to use as the tail of the generated lazy
-       -- 'L.ByteString'
+    -> L.LazyByteString
+       -- ^ 'L.LazyByteString' to use as the tail of the generated lazy
+       -- 'L.LazyByteString'
     -> Builder
        -- ^ 'Builder' to execute
-    -> L.ByteString
-       -- ^ Resulting lazy 'L.ByteString'
+    -> L.LazyByteString
+       -- ^ Resulting 'L.LazyByteString'
 toLazyByteStringWith strategy k b =
     ciosUnitToLazyByteString strategy k $ unsafeDupablePerformIO $
         buildStepToCIOS strategy (runBuilder b)
@@ -1108,26 +1166,32 @@ toLazyByteStringWith strategy k b =
 -- 'Buffer's allocated according to the given 'AllocationStrategy'.
 {-# INLINE buildStepToCIOS #-}
 buildStepToCIOS
-    :: AllocationStrategy          -- ^ Buffer allocation strategy to use
+    :: forall a.
+       AllocationStrategy          -- ^ Buffer allocation strategy to use
     -> BuildStep a                 -- ^ 'BuildStep' to execute
     -> IO (ChunkIOStream a)
-buildStepToCIOS !(AllocationStrategy nextBuffer bufSize trim) =
+buildStepToCIOS (AllocationStrategy nextBuffer bufSize trim) =
     \step -> nextBuffer Nothing >>= fill step
   where
-    fill !step !buf@(Buffer fpbuf br@(BufferRange _ pe)) = do
+    fill :: BuildStep a -> Buffer -> IO (ChunkIOStream a)
+    fill !step buf@(Buffer fpbuf br@(BufferRange _ pe)) = do
         res <- fillWithBuildStep step doneH fullH insertChunkH br
         touchForeignPtr fpbuf
         return res
       where
+        pbuf :: Ptr Word8
         pbuf = unsafeForeignPtrToPtr fpbuf
 
+        doneH :: Ptr Word8 -> a -> IO (ChunkIOStream a)
         doneH op' x = return $
             Finished (Buffer fpbuf (BufferRange op' pe)) x
 
+        fullH :: Ptr Word8 -> Int -> BuildStep a -> IO (ChunkIOStream a)
         fullH op' minSize nextStep =
             wrapChunk op' $ const $
                 nextBuffer (Just (buf, max minSize bufSize)) >>= fill nextStep
 
+        insertChunkH :: Ptr Word8 -> S.StrictByteString -> BuildStep a -> IO (ChunkIOStream a)
         insertChunkH op' bs nextStep =
             wrapChunk op' $ \isEmpty -> yield1 bs $
                 -- Checking for empty case avoids allocating 'n-1' empty
@@ -1139,15 +1203,17 @@ buildStepToCIOS !(AllocationStrategy nextBuffer bufSize trim) =
 
         -- Wrap and yield a chunk, trimming it if necesary
         {-# INLINE wrapChunk #-}
+        wrapChunk :: Ptr Word8 -> (Bool -> IO (ChunkIOStream a)) -> IO (ChunkIOStream a)
         wrapChunk !op' mkCIOS
           | chunkSize == 0      = mkCIOS True
           | trim chunkSize size = do
-              bs <- S.create chunkSize $ \pbuf' ->
-                        copyBytes pbuf' pbuf chunkSize
-              -- FIXME: We could reuse the trimmed buffer here.
+              bs <- S.createFp chunkSize $ \fpbuf' ->
+                        S.memcpyFp fpbuf' fpbuf chunkSize
+              -- It is not safe to re-use the old buffer (see #690),
+              -- so we allocate a new buffer after trimming.
               return $ Yield1 bs (mkCIOS False)
           | otherwise            =
-              return $ Yield1 (S.PS fpbuf 0 chunkSize) (mkCIOS False)
+              return $ Yield1 (S.BS fpbuf chunkSize) (mkCIOS False)
           where
             chunkSize = op' `minusPtr` pbuf
             size      = pe  `minusPtr` pbuf

@@ -1,7 +1,6 @@
 import Test.Cabal.Prelude
 -- Test internal custom preprocessor
-main = setupAndCabalTest $ do
-    skipUnless =<< hasCabalForGhc
+main = setupTest $ do
     setup_build []
     runExe' "hello-world" []
         >>= assertOutputContains "hello from A"

@@ -16,7 +16,7 @@ Optionally, the program may be linked with the :ghc-flag:`-threaded` option (see
 :ref:`options-linker`. This provides two benefits:
 
 - It enables the :rts-flag:`-N ⟨x⟩` to be used, which allows threads to run in
-  parallelism on a multi-processor or multi-core machine. See :ref:`using-smp`.
+  parallel on a multi-processor or multi-core machine. See :ref:`using-smp`.
 
 - If a thread makes a foreign call (and the call is not marked
   ``unsafe``), then other Haskell threads in the program will continue
@@ -111,6 +111,7 @@ There are two ways to run a program on multiple processors: call
 use the RTS :rts-flag:`-N ⟨x⟩` options.
 
 .. rts-flag:: -N ⟨x⟩
+              -N
               -maxN ⟨x⟩
 
     Use ⟨x⟩ simultaneous threads when running the program.
@@ -151,6 +152,14 @@ use the RTS :rts-flag:`-N ⟨x⟩` options.
     program via ``Control.Concurrent.getNumCapabilities``, and it may be
     changed while the program is running by calling
     ``Control.Concurrent.setNumCapabilities``.
+
+
+.. note::
+
+    The maximum number of capabilities supported by the GHC runtime system is
+    determined when at RTS startup to be either 256, the value given by
+    :rts-flag:`-N ⟨x⟩`, or the number of logical CPU cores, whichever is
+    greater.
 
 The following options affect the way the runtime schedules threads on
 CPUs:

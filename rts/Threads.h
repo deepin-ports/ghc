@@ -36,7 +36,7 @@ bool removeThreadFromDeQueue   (Capability *cap, StgTSO **head, StgTSO **tail, S
 
 StgBool isThreadBound (StgTSO* tso);
 
-// Overfow/underflow
+// Overflow/underflow
 void threadStackOverflow  (Capability *cap, StgTSO *tso);
 W_   threadStackUnderflow (Capability *cap, StgTSO *tso);
 
@@ -46,6 +46,7 @@ bool performTryPutMVar(Capability *cap, StgMVar *mvar, StgClosure *value);
 void printThreadBlockage (StgTSO *tso);
 void printThreadStatus (StgTSO *t);
 void printAllThreads (void);
+void printGlobalThreads(void);
 void printThreadQueue (StgTSO *t);
 #endif
 

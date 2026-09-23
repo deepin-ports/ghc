@@ -1,5 +1,43 @@
 # Changelog for [`stm` package](http://hackage.haskell.org/package/stm)
 
+## 2.5.3.1 *November 2023*
+
+  * Drop unused testcase inadvertently introduced in previous reversion
+
+## 2.5.3.0 *November 2023*
+
+  * Revert array-based reimplementation of `TBQueue` due to [#76](https://github.com/haskell/stm/issues/76)
+
+## 2.5.2.1 *September 2023*
+
+  * Eliminate reliance on undefined CPP behavior ([#75](https://github.com/haskell/stm/issues/75))
+
+## 2.5.2.0 *September 2023*
+
+  * Fix strictness of `stateTVar` ([#30](https://github.com/haskell/stm/ssues/30))
+  * Rewrite `TBQueue` to use a more-efficient array-based representation ([#65](https://github.com/haskell/stm/issues/65))
+  * `newTBQueue 0` now fails as one would expect ([#28](https://github.com/haskell/stm/issues/28))
+  * Add `capacityTBQueue` ([#61](https://github.com/haskell/stm/issues/61))
+  * Add `MArray TArray e IO` instance
+  * Use unlifted `Array#` for `TArray` ([#66](https://github.com/haskell/stm/pull/66))
+
+## 2.5.1.0 *Aug 2022*
+
+  * Teach `flushTBQueue` to only flush queue when necessary
+  * Introduce `Control.Concurrent.STM.TMVar.writeTMVar`
+  * Add `Semigroup` and `Monoid` instances for `STM`
+
+## 2.5.0.2 *Dec 2021*
+
+  * Fix non-exhaustive patterns warning (#49)
+
+  * Document particulars of effect-rollback of `Control.Monad.STM.throwSTM` (#32)
+
+## 2.5.0.1 *May 2020*
+
+  * Optimise implementation of `peekTQueue` and `peekTBQueue` to reduce
+    probability of transaction conflicts.
+
 ## 2.5.0.0 *Sep 2018*
 
   * Removed `alwaysSucceeds` and `always`, GHC's invariant checking primitives. (GHC #14324)
@@ -18,7 +56,7 @@
 
   * Fix incorrect bookkeeping of write capacity in `flushTBQueue` (gh-9)
 
-  * Avoid redundant `writeTVar`s in `flushTQueue` to avoid unncessarily
+  * Avoid redundant `writeTVar`s in `flushTQueue` to avoid unnecessarily
     invalidating other transactions (gh-6)
 
 ### 2.4.5.0 *Feb 2018*

@@ -10,17 +10,13 @@ Profiling
 
 GHC comes with a time and space profiling system, so that you can answer
 questions like "why is my program so slow?", or "why is my program using
-so much memory?".
+so much memory?". We'll start by describing how to do time profiling.
 
-Profiling a program is a three-step process:
+Time profiling a program is a three-step process:
 
 1. Re-compile your program for profiling with the :ghc-flag:`-prof` option, and
    probably one of the options for adding automatic annotations:
-   :ghc-flag:`-fprof-auto` is the most common [1]_.
-
-   If you are using external packages with :command:`cabal`, you may need to
-   reinstall these packages with profiling support; typically this is
-   done with ``cabal install -p package --reinstall``.
+   :ghc-flag:`-fprof-late` is the recommended option.
 
 2. Having compiled the program for profiling, you now need to run it to
    generate the profile. For example, a simple time profile can be
@@ -36,6 +32,9 @@ Profiling a program is a three-step process:
 
 3. Examine the generated profiling information, use the information to
    optimise your program, and repeat as necessary.
+
+The time profiler measures the CPU time taken by the Haskell code in your application.
+In particular time taken by safe foreign calls is not tracked by the profiler (see :ref:`prof-foreign-calls`).
 
 .. _cost-centres:
 
@@ -197,7 +196,10 @@ Inserting cost centres by hand
 Cost centres are just program annotations. When you say ``-fprof-auto``
 to the compiler, it automatically inserts a cost centre annotation
 around every binding not marked INLINE in your program, but you are
-entirely free to add cost centre annotations yourself.
+entirely free to add cost centre annotations yourself. Be careful adding too many
+cost-centre annotations as the optimiser is careful to not move them around or
+remove them, which can severly affect how your program is optimised and hence the
+runtime performance!
 
 The syntax of a cost centre annotation for expressions is ::
 
@@ -205,10 +207,22 @@ The syntax of a cost centre annotation for expressions is ::
 
 where ``"name"`` is an arbitrary string, that will become the name of
 your cost centre as it appears in the profiling output, and
-``<expression>`` is any Haskell expression. An ``SCC`` annotation
-extends as far to the right as possible when parsing. (SCC stands for
-"Set Cost Centre"). The double quotes can be omitted if ``name`` is a
-Haskell identifier, for example: ::
+``<expression>`` is any Haskell expression. An ``SCC`` annotation extends as
+far to the right as possible when parsing, having the same precedence as lambda
+abstractions, let expressions, and conditionals. Additionally, an annotation
+may not appear in a position where it would change the grouping of
+subexpressions::
+
+  a = 1 / 2 / 2                          -- accepted (a=0.25)
+  b = 1 / {-# SCC "name" #-} 2 / 2       -- rejected (instead of b=1.0)
+
+This restriction is required to maintain the property that inserting a pragma,
+just like inserting a comment, does not have unintended effects on the
+semantics of the program, in accordance with `GHC Proposal #176
+<https://github.com/ghc-proposals/ghc-proposals/blob/master/proposals/0176-scc-parsing.rst>`__.
+
+SCC stands for "Set Cost Centre". The double quotes can be omitted if ``name``
+is a Haskell identifier starting with a lowercase letter, for example: ::
 
     {-# SCC id #-} <expression>
 
@@ -235,9 +249,9 @@ Here is an example of a program with a couple of SCCs: ::
     main = do let xs = [1..1000000]
               let ys = [1..2000000]
               print $ {-# SCC last_xs #-} last xs
-              print $ {-# SCC last_init_xs #-} last $ init xs
+              print $ {-# SCC last_init_xs #-} last (init xs)
               print $ {-# SCC last_ys #-} last ys
-              print $ {-# SCC last_init_ys #-} last $ init ys
+              print $ {-# SCC last_init_ys #-} last (init ys)
 
 which gives this profile when run:
 
@@ -299,6 +313,39 @@ and become CAFs. You will probably need to consult the Core
 .. index::
    single: -fprof-cafs
 
+.. _prof-foreign-calls:
+
+Profiling and foreign calls
+---------------------------
+
+Simply put, the profiler includes time spent in unsafe foreign
+calls but ignores time taken in safe foreign calls. For example, time spent blocked on IO
+operations (e.g. ``getLine``) is not accounted for in the profile as ``getLine`` is implemented
+using a safe foreign call.
+
+The profiler estimates CPU time, for Haskell threads within the program only.
+In particular, time "taken" by the program in blocking safe foreign calls
+is not accounted for in time profiles. The runtime has the notion of a virtual
+processor which is known as a "capability". Haskell threads are run on capabilities,
+and the profiler samples the capabilities in order to determine what is being
+executed at a certain time. When a safe foreign call is executed, it's run outside
+the context of a capability; hence the sampling does not account for the time
+taken. Whilst the safe call is executed, other
+Haskell threads are free to run on the capability, and their cost will be attributed
+to the profiler. When the safe call is finished, the blocked, descheduled thread can
+be resumed and rescheduled.
+
+However, the time taken by blocking on unsafe foreign calls is accounted for in the profile.
+This happens because unsafe foreign calls are executed by the same capability
+their calling Haskell thread is running on. Therefore, an unsafe foreign call will
+block the entire capability whilst it is running, and any time the capability is
+sampled the "cost" of the foreign call will be attributed to the calling cost-centre stack.
+
+However, do note that you are not supposed to use unsafe foreign calls for any
+operations which do block! Do not be tempted to replace your safe foreign calls
+with unsafe calls just so they appear in the profile. This prevents GC from
+happening until the foreign call returns, which can be catastrophic for performance.
+
 .. _prof-compiler-options:
 
 Compiler options for profiling
@@ -318,92 +365,7 @@ Compiler options for profiling
     put in your source will spring to life.
 
     Without a :ghc-flag:`-prof` option, your ``SCC``\ s are ignored; so you can
-    compile :pragma:`SCC`-laden code without changing it.
-
-.. warning::
-
-   Due to platform limitations, GHC may fail to produce profiled
-   object files on 32-bit Windows (see :ghc-ticket:`15934`).
-
-There are a few other profiling-related compilation options. Use them
-*in addition to* :ghc-flag:`-prof`. These do not have to be used consistently
-for all modules in a program.
-
-.. ghc-flag:: -fprof-auto
-    :shortdesc: Auto-add ``SCC``\\ s to all bindings not marked INLINE
-    :type: dynamic
-    :reverse: -fno-prof-auto
-    :category:
-
-    *All* bindings not marked INLINE, whether exported or not, top level
-    or nested, will be given automatic ``SCC`` annotations. Functions
-    marked INLINE must be given a cost centre manually.
-
-.. ghc-flag:: -fprof-auto-top
-    :shortdesc: Auto-add ``SCC``\\ s to all top-level bindings not marked INLINE
-    :type: dynamic
-    :reverse: -fno-prof-auto
-    :category:
-
-    .. index::
-       single: cost centres; automatically inserting
-
-    GHC will automatically add ``SCC`` annotations for all top-level
-    bindings not marked INLINE. If you want a cost centre on an INLINE
-    function, you have to add it manually.
-
-.. ghc-flag:: -fprof-auto-exported
-    :shortdesc: Auto-add ``SCC``\\ s to all exported bindings not marked INLINE
-    :type: dynamic
-    :reverse: -fno-prof-auto
-    :category:
-
-    .. index::
-       single: cost centres; automatically inserting
-
-    GHC will automatically add ``SCC`` annotations for all exported
-    functions not marked INLINE. If you want a cost centre on an INLINE
-    function, you have to add it manually.
-
-.. ghc-flag:: -fprof-auto-calls
-    :shortdesc: Auto-add ``SCC``\\ s to all call sites
-    :type: dynamic
-    :reverse: -fno-prof-auto-calls
-    :category:
-
-    Adds an automatic ``SCC`` annotation to all *call sites*. This is
-    particularly useful when using profiling for the purposes of
-    generating stack traces; see the function :base-ref:`Debug.Trace.traceShow`,
-    or the :rts-flag:`-xc` RTS flag (:ref:`rts-options-debugging`) for more
-    details.
-
-.. ghc-flag:: -fprof-cafs
-    :shortdesc: Auto-add ``SCC``\\ s to all CAFs
-    :type: dynamic
-    :reverse: -fno-prof-cafs
-    :category:
-
-    The costs of all CAFs in a module are usually attributed to one
-    "big" CAF cost-centre. With this option, all CAFs get their own
-    cost-centre. An “if all else fails” option…
-
-.. ghc-flag:: -fno-prof-auto
-    :shortdesc: Disables any previous :ghc-flag:`-fprof-auto`,
-        :ghc-flag:`-fprof-auto-top`, or :ghc-flag:`-fprof-auto-exported` options.
-    :type: dynamic
-    :reverse: -fprof-auto
-    :category:
-
-    Disables any previous :ghc-flag:`-fprof-auto`, :ghc-flag:`-fprof-auto-top`, or
-    :ghc-flag:`-fprof-auto-exported` options.
-
-.. ghc-flag:: -fno-prof-cafs
-    :shortdesc: Disables any previous :ghc-flag:`-fprof-cafs` option.
-    :type: dynamic
-    :reverse: -fprof-cafs
-    :category:
-
-    Disables any previous :ghc-flag:`-fprof-cafs` option.
+    compile ``SCC``-laden code without changing it.
 
 .. ghc-flag:: -fno-prof-count-entries
     :shortdesc: Do not collect entry counts
@@ -419,6 +381,244 @@ for all modules in a program.
     correct entry counts. This option can be useful if you aren't
     interested in the entry counts (for example, if you only intend to
     do heap profiling).
+
+
+There are a few other profiling-related compilation options. Use them
+*in addition to* :ghc-flag:`-prof`. These do not have to be used consistently
+for all modules in a program.
+
+Automatically placing cost-centres
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+GHC has a number of flags for automatically inserting cost-centres into the
+compiled program. Use these options carefully because inserting too many cost-centres
+in the wrong places will mean the optimiser will be less effective and the runtime behaviour
+of your profiled program will be different to that of the unprofiled one.
+
+.. ghc-flag:: -fprof-callers=⟨name⟩
+    :shortdesc: Auto-add ``SCC``\\ s to all call-sites of the named function.
+    :type: dynamic
+    :category:
+
+    Automatically enclose all occurrences of the named function in an ``SCC``.
+    Note that these cost-centres are added late in compilation (after
+    simplification) and consequently the names may be slightly different than
+    they appear in the source program (e.g. a call to ``f`` may inlined with
+    its wrapper, resulting in an occurrence of its worker, ``$wf``).
+
+    In addition to plain module-qualified names (e.g. ``GHC.Base.map``),
+    ⟨name⟩ also accepts a small globbing language using ``*`` as a wildcard
+    symbol:
+
+    .. code-block:: none
+
+        pattern    := <module> '.' <identifier>
+        module     := '*'
+                    | <Haskell module name>
+        identifier := <ident_char>
+        ident
+
+    For instance, the following are all valid patterns:
+
+     * ``Data.List.map``
+     * ``*.map``
+     * ``*.parse*``
+     * ``*.<\*>``
+
+    The ``*`` character can be used literally by escaping (e.g. ``\*``).
+
+.. ghc-flag:: -fprof-auto
+    :shortdesc: Auto-add ``SCC``\\ s to all bindings not marked INLINE
+    :type: dynamic
+    :reverse: -fno-prof-auto
+    :category:
+
+    *All* bindings not marked :pragma:`INLINE`, whether exported or not, top
+    level or nested, will be given automatic ``SCC`` annotations. Functions
+    marked :pragma:`INLINE` must be given a cost centre manually.
+
+.. ghc-flag:: -fprof-auto-top
+    :shortdesc: Auto-add ``SCC``\\ s to all top-level bindings not marked INLINE
+    :type: dynamic
+    :reverse: -fno-prof-auto
+    :category:
+
+    .. index::
+       single: cost centres; automatically inserting
+
+    GHC will automatically add ``SCC`` annotations for all top-level
+    bindings not marked :pragma:`INLINE`. If you want a cost centre on an
+    :pragma:`INLINE` function, you have to add it manually.
+
+.. ghc-flag:: -fprof-auto-exported
+    :shortdesc: Auto-add ``SCC``\\ s to all exported bindings not marked :pragma:`INLINE`
+    :type: dynamic
+    :reverse: -fno-prof-auto
+    :category:
+
+    .. index::
+       single: cost centres; automatically inserting
+
+    GHC will automatically add ``SCC`` annotations for all exported
+    functions not marked :pragma:`INLINE`. If you want a cost centre on an
+    :pragma:`INLINE` function, you have to add it manually.
+
+.. ghc-flag:: -fprof-auto-calls
+    :shortdesc: Auto-add ``SCC``\\ s to all call sites
+    :type: dynamic
+    :reverse: -fno-prof-auto
+    :category:
+
+    Adds an automatic ``SCC`` annotation to all *call sites*. This is
+    particularly useful when using profiling for the purposes of
+    generating stack traces; see the function :base-ref:`Debug.Trace.traceShow`,
+    or the :rts-flag:`-xc` RTS flag (:ref:`rts-options-debugging`) for more
+    details.
+
+.. ghc-flag:: -fprof-late
+    :shortdesc: Auto-add ``SCC``\\ s to all top level bindings *after* the core pipeline has run.
+    :type: dynamic
+    :reverse: -fno-prof-late
+    :category:
+
+    :since: 9.4.1
+
+    Adds an automatic ``SCC`` annotation to all top level bindings which might perform work.
+    This is done late in the compilation pipeline after the optimizer has run and unfoldings have been created.
+    This means these cost centres will not interfere with core-level optimizations
+    and the resulting profile will be closer to the performance profile of an optimized non-profiled
+    executable.
+
+    While the results of this are generally informative, some of the compiler internal names
+    will leak into the profile. Further if a function is inlined into a use site it's costs will be counted against the
+    caller's cost center.
+
+    For example if we have this code:
+
+    .. code-block:: haskell
+
+        {-# INLINE mysum #-}
+        mysum = sum
+        main = print $ mysum [1..9999999]
+
+    Then ``mysum`` will not show up in the profile since it will be inlined into main and therefore
+    it's associated costs will be attributed to mains implicit cost centre.
+
+.. ghc-flag:: -fprof-late-inline
+    :shortdesc: Auto-add ``SCC``\\ s to all top level bindings *after* the optimizer has run and retain them when inlining.
+    :type: dynamic
+    :reverse: -fno-prof-late-inline
+    :category:
+
+    :since: 9.4.1
+
+    Adds an automatic ``SCC`` annotation to all top level bindings late in the core pipeline after
+    the optimizer has run. This is the same as :ghc-flag:`-fprof-late` except that cost centers are included in some unfoldings.
+
+    The result of which is that cost centers *can* inhibit core optimizations to some degree at use sites
+    after inlining. Further there can be significant overhead from cost centres added to small functions if they are inlined often.
+
+    You can try this mode if :ghc-flag:`-fprof-late` results in a profile that's too hard to interpret.
+
+.. ghc-flag:: -fprof-late-overloaded
+    :shortdesc: Auto-add ``SCC``\\ s to all top level overloaded bindings *after* the core pipeline has run.
+    :type: dynamic
+    :reverse: -fno-prof-late-overloaded
+    :category:
+
+    :since: 9.10.1
+
+    Adds an automatic ``SCC`` annotation to all *overloaded* top level bindings
+    late in the compilation pipeline after the optimizer has run and unfoldings
+    have been created. This means these cost centres will not interfere with
+    core-level optimizations and the resulting profile will be closer to the
+    performance profile of an optimized non-profiled executable.
+
+    This flag can help determine which top level bindings encountered during a
+    program's execution are still overloaded after inlining and specialization.
+
+.. ghc-flag:: -fprof-late-overloaded-calls
+    :shortdesc: Auto-add ``SCC``\\ s to all call sites that include dictionary arguments *after* the core pipeline has run.
+    :type: dynamic
+    :reverse: -fno-prof-late-overloaded-calls
+    :category:
+
+    :since: 9.10.1
+
+    Adds an automatic ``SCC`` annotation to all call sites that include
+    dictionary arguments late in the compilation pipeline after the optimizer
+    has run and unfoldings have been created. This means these cost centres will
+    not interfere with core-level optimizations and the resulting profile will
+    be closer to the performance profile of an optimized non-profiled
+    executable.
+
+    This flag is potentially more useful than :ghc-flag:`-fprof-late-overloaded`
+    since it will also add ``SCC`` annotations to call sites of imported
+    overloaded functions.
+
+    Some overloaded calls may not be annotated, specifically in cases where the
+    optimizer turns an overloaded function into a join point. Calls to such
+    functions will not be wrapped in ``SCC`` annotations, since it would make
+    them non-tail calls, which is a requirement for join points. Instead,
+    ``SCC`` annotations are added around the body of overloaded join variables
+    and given distinct names (``join-rhs-<var>``) to avoid confusion.
+
+.. ghc-flag:: -fprof-cafs
+    :shortdesc: Auto-add ``SCC``\\ s to all CAFs
+    :type: dynamic
+    :reverse: -fno-prof-cafs
+    :category:
+
+    The costs of all CAFs in a module are usually attributed to one
+    "big" CAF cost-centre. With this option, all CAFs get their own
+    cost-centre. An "if all else fails" option…
+
+.. ghc-flag:: -fprof-manual
+    :shortdesc: Process manual ``SCC`` annotations.
+    :type: dynamic
+    :reverse: -fno-prof-manual
+    :category:
+
+    :default: on
+
+    Process (or ignore) manual ``SCC`` annotations. Can be helpful to ignore annotations from libraries which
+    are not desired.
+
+.. ghc-flag:: -auto-all
+    :shortdesc: *(deprecated)* Alias for :ghc-flag:`-fprof-auto`
+    :type: dynamic
+
+    Deprecated alias for :ghc-flag:`-fprof-auto`
+
+.. ghc-flag:: -auto
+    :shortdesc: *(deprecated)* Alias for :ghc-flag:`-fprof-auto-exported`
+    :type: dynamic
+
+    Deprecated alias for :ghc-flag:`-fprof-auto-exported`
+
+.. ghc-flag:: -caf-all
+    :shortdesc: *(deprecated)* Alias for :ghc-flag:`-fprof-cafs`
+    :type: dynamic
+
+    Deprecated alias for :ghc-flag:`-fprof-cafs`
+
+.. ghc-flag:: -no-auto-all
+    :shortdesc: *(deprecated)* Alias for :ghc-flag:`-fno-prof-auto`
+    :type: dynamic
+
+    Deprecated alias for :ghc-flag:`-fno-prof-auto`
+
+.. ghc-flag:: -no-auto
+    :shortdesc: *(deprecated)* Alias for :ghc-flag:`-fno-prof-auto`
+    :type: dynamic
+
+    Deprecated alias for :ghc-flag:`-fno-prof-auto`
+
+.. ghc-flag:: -no-caf-all
+    :shortdesc: *(deprecated)* Alias for :ghc-flag:`-fno-prof-cafs`
+    :type: dynamic
+
+    Deprecated alias for :ghc-flag:`-fno-prof-cafs`
 
 .. _prof-time-options:
 
@@ -464,14 +664,15 @@ enclosed between ``+RTS ... -RTS`` as usual):
 
 .. rts-flag:: -V ⟨secs⟩
 
-    :default: 0.02
+    :default: 0.001 when profiling, and 0.01 otherwise
 
     Sets the interval that the RTS clock ticks at, which is also the sampling
-    interval of the time and allocation profile. The default is 0.02 seconds.
-    The runtime uses a single timer signal to count ticks; this timer signal is
-    used to control the context switch timer (:ref:`using-concurrent`) and the
-    heap profiling timer :ref:`rts-options-heap-prof`. Also, the time profiler
-    uses the RTS timer signal directly to record time profiling samples.
+    interval of the time and allocation profile. The default is 0.001 seconds
+    when profiling, and 0.01 otherwise. The runtime uses a single timer signal
+    to count ticks; this timer signal is used to control the context switch
+    timer (:ref:`using-concurrent`) and the heap profiling timer
+    :ref:`rts-options-heap-prof`. Also, the time profiler uses the RTS timer
+    signal directly to record time profiling samples.
 
     Normally, setting the :rts-flag:`-V ⟨secs⟩` option directly is not
     necessary: the resolution of the RTS timer is adjusted automatically if a
@@ -499,8 +700,10 @@ enclosed between ``+RTS ... -RTS`` as usual):
 JSON profile format
 ~~~~~~~~~~~~~~~~~~~
 
-When invoked with the :rts-flag:`-pj` flag the runtime will emit the cost-centre
-profile in a machine-readable JSON format. The top-level object of this format
+profile in a machine-readable JSON format. The JSON file can be directly loaded
+into `speedscope.app <https://www.speedscope.app/>`_ to interactively view the profile.
+
+The top-level object of this format
 has the following properties,
 
 ``program`` (string)
@@ -529,7 +732,7 @@ has the following properties,
     The profile tree itself
 
 Each entry in ``cost_centres`` is an object describing a cost-centre of the
-program having the following properies,
+program having the following properties,
 
 ``id`` (integral number)
     A unique identifier used to refer to the cost-centre
@@ -639,8 +842,12 @@ For instance, a simple profile might look like this,
       }
     }
 
+Eventlog profile format
+~~~~~~~~~~~~~~~~~~~~~~~
 
-
+In addition to the ``.prof`` and ``.json`` formats the cost centre definitions
+and samples are also emitted to the :ref:`eventlog <rts-eventlog>`. The format
+of the events is specified in the :ref:`eventlog encodings <eventlog-encodings>` section.
 
 
 .. _prof-heap:
@@ -655,17 +862,34 @@ program holds on to more memory at run-time that it needs to. Space
 leaks lead to slower execution due to heavy garbage collector activity,
 and may even cause the program to run out of memory altogether.
 
+Heap profiling differs from time profiling in the fact that is not always
+necessary to use the profiling runtime to generate a heap profile. There
+are two heap profiling modes (:rts-flag:`-hT` and :rts-flag:`-hi` [1]_) which are always
+available.
+
 To generate a heap profile from your program:
 
-1. Compile the program for profiling (:ref:`prof-compiler-options`).
+1. Assuming you need the profiling runtime, compile the program for profiling (:ref:`prof-compiler-options`).
 
 2. Run it with one of the heap profiling options described below (eg.
-   :rts-flag:`-h` for a basic producer profile). This generates the file
-   :file:`{prog}.hp`.
+   :rts-flag:`-hc` for a basic producer profile) and enable the eventlog using :rts-flag:`-l <-l ⟨flags⟩>`.
 
-   If the :ref:`event log <rts-eventlog>` is enabled (with the :rts-flag:`-l`
-   runtime system flag) heap samples will additionally be emitted to the GHC
+   Heap samples will be emitted to the GHC
    event log (see :ref:`heap-profiler-events` for details about event format).
+
+3. Render the heap profile using `eventlog2html <https://hackage.haskell.org/package/eventlog2html>`_.
+   This produces an HTML file which contains the visualised profile.
+
+4. Open the rendered interactive profile in your web browser.
+
+For example, here is a heap profile produced of using eventlog profiling on GHC
+compiling the Cabal library. You can read a lot more about eventlog2html on the website.
+
+.. image:: images/eventlog_profile.*
+
+Note that there is the legacy :file:`{prog}.hp` format which has been deprecated
+in favour of eventlog based profiling. In order to render the legacy format, the
+steps are as follows.
 
 3. Run :command:`hp2ps` to produce a Postscript file, :file:`{prog}.ps`. The
    :command:`hp2ps` utility is described in detail in :ref:`hp2ps`.
@@ -678,9 +902,9 @@ from GHC's ``nofib`` benchmark suite,
 
 .. image:: images/prof_scc.*
 
-You might also want to take a look at
-`hp2any <http://www.haskell.org/haskellwiki/Hp2any>`__, a more advanced
-suite of tools (not distributed with GHC) for displaying heap profiles.
+Note that there might be a big difference between the OS reported memory usage
+of your program and the amount of live data as reported by heap profiling.
+The reasons for the difference are explained in :ref:`hints-os-memory`.
 
 .. _rts-options-heap-prof:
 
@@ -694,49 +918,60 @@ following RTS options select which break-down to use:
 
 .. rts-flag:: -hT
 
-    Breaks down the graph by heap closure type.
+    Breaks down the graph by heap closure type. This does not require the profiling
+    runtime.
 
 .. rts-flag:: -hc
-              -h
 
-    *Requires :ghc-flag:`-prof`.* Breaks down the graph by the cost-centre stack
+    *Requires* :ghc-flag:`-prof`. Breaks down the graph by the cost-centre stack
     which produced the data.
-
-    .. note:: The meaning of the shortened :rts-flag:`-h` is dependent on whether
-              your program was compiled for profiling. When compiled for profiling,
-              :rts-flag:`-h` is equivalent to :rts-flag:`-hc`, but otherwise is
-              equivalent to :rts-flag:`-hT` (see :ref:`rts-profiling`).
 
 .. rts-flag:: -hm
 
-    *Requires :ghc-flag:`-prof`.* Break down the live heap by the module
+    *Requires* :ghc-flag:`-prof`. Break down the live heap by the module
     containing the code which produced the data.
 
 .. rts-flag:: -hd
 
-    *Requires :ghc-flag:`-prof`.* Breaks down the graph by closure description.
+    *Requires* :ghc-flag:`-prof`. Breaks down the graph by closure description.
     For actual data, the description is just the constructor name, for other
     closures it is a compiler-generated string identifying the closure.
 
 .. rts-flag:: -hy
 
-    *Requires :ghc-flag:`-prof`.* Breaks down the graph by type. For closures
+    *Requires* :ghc-flag:`-prof`. Breaks down the graph by type. For closures
     which have function type or unknown/polymorphic type, the string will
     represent an approximation to the actual type.
 
+.. rts-flag:: -he
+
+    :since: 9.10.1
+
+    *Requires* :ghc-flag:`-prof`. Break down the graph by era.
+
+    Each closure is tagged with the era in which it is created. Eras start at 1
+    and can be set in your program to domain specific values using functions from
+    ``GHC.Profiling.Eras`` or incremented automatically by the
+    :rts-flag:`--automatic-era-increment`.
+
 .. rts-flag:: -hr
 
-    *Requires :ghc-flag:`-prof`.* Break down the graph by retainer set. Retainer
+    *Requires* :ghc-flag:`-prof`. Break down the graph by retainer set. Retainer
     profiling is described in more detail below (:ref:`retainer-prof`).
 
 .. rts-flag:: -hb
 
-    *Requires :ghc-flag:`-prof`.* Break down the graph by biography.
+    *Requires* :ghc-flag:`-prof`. Break down the graph by biography.
     Biographical profiling is described in more detail below
     (:ref:`biography-prof`).
 
-.. rts-flag:: -l
+.. rts-flag:: -hi
 
+    Break down the graph by the address of the info table of a closure. For this
+    to produce useful output the program must have been compiled with
+    :ghc-flag:`-finfo-table-map` but it does not require the profiling runtime.
+
+.. rts-flag:: -l
     :noindex:
 
     .. index::
@@ -761,42 +996,47 @@ follows:
 .. rts-flag:: -hc ⟨name⟩
     :noindex:
 
-    Restrict the profile to closures produced by cost-centre stacks with
+    *Requires* :ghc-flag:`-prof`. Restrict the profile to closures produced by cost-centre stacks with
     one of the specified cost centres at the top.
 
 .. rts-flag:: -hC ⟨name⟩
     :noindex:
 
-    Restrict the profile to closures produced by cost-centre stacks with
+    *Requires* :ghc-flag:`-prof`. Restrict the profile to closures produced by cost-centre stacks with
     one of the specified cost centres anywhere in the stack.
 
 .. rts-flag:: -hm ⟨module⟩
     :noindex:
 
-    Restrict the profile to closures produced by the specified modules.
+    *Requires* :ghc-flag:`-prof`. Restrict the profile to closures produced by the specified modules.
 
 .. rts-flag:: -hd ⟨desc⟩
     :noindex:
 
-    Restrict the profile to closures with the specified description
+    *Requires* :ghc-flag:`-prof`. Restrict the profile to closures with the specified description
     strings.
 
 .. rts-flag:: -hy ⟨type⟩
     :noindex:
 
-    Restrict the profile to closures with the specified types.
+    *Requires* :ghc-flag:`-prof`. Restrict the profile to closures with the specified types.
+
+.. rts-flag:: -he ⟨era⟩
+    :noindex:
+
+    *Requires* :ghc-flag:`-prof`. Restrict the profile to the specified era.
 
 .. rts-flag:: -hr ⟨cc⟩
     :noindex:
 
-    Restrict the profile to closures with retainer sets containing
+    *Requires* :ghc-flag:`-prof`. Restrict the profile to closures with retainer sets containing
     cost-centre stacks with one of the specified cost centres at the
     top.
 
 .. rts-flag:: -hb ⟨bio⟩
     :noindex:
 
-    Restrict the profile to closures with one of the specified
+    *Requires* :ghc-flag:`-prof`. Restrict the profile to closures with one of the specified
     biographies, where ⟨bio⟩ is one of ``lag``, ``drag``, ``void``, or
     ``use``.
 
@@ -822,19 +1062,35 @@ There are three more options which relate to heap profiling:
     profiles are always sampled with the frequency of the RTS clock. See
     :ref:`prof-time-options` for changing that.
 
-.. rts-flag:: -xt
+.. rts-flag:: --no-automatic-heap-samples
 
-    Include the memory occupied by threads in a heap profile. Each
-    thread takes up a small area for its thread state in addition to the
-    space allocated for its stack (stacks normally start small and then
-    grow as necessary).
+    :since: 9.2.1
 
-    This includes the main thread, so using :rts-flag:`-xt` is a good way to see
-    how much stack space the program is using.
+    Don't start heap profiling from the start of program execution. If this
+    option is enabled, it's expected that the user will manually start heap
+    profiling or request specific samples using functions from ``GHC.Profiling``.
 
-    Memory occupied by threads and their stacks is labelled as “TSO” and
-    “STACK” respectively when displaying the profile by closure
-    description or type description.
+.. rts-flag:: --no-automatic-time-samples
+
+    :since: 9.10.1
+
+    Don't start time profiling from the start of program execution. If this
+    option is enabled, it's expected that the user will manually start time
+    profiling or request specific samples using functions from ``GHC.Profiling``.
+
+.. rts-flag:: --automatic-era-increment
+
+    :since: 9.10.1
+
+    Increment the era by 1 on each major garbage collection. This is used
+    in conjunction with :rts-flag:`-he`.
+
+.. rts-flag:: --null-eventlog-writer
+
+    :since: 9.2.2
+
+    Don't output eventlog to file, only configure tracing events.
+    Meant to be used with customized event log writer.
 
 .. rts-flag:: -L ⟨num⟩
 
@@ -909,6 +1165,14 @@ we get a profile of the retainers of ``B``:
 This trick isn't foolproof, because there might be other ``B`` closures in
 the heap which aren't the retainers we are interested in, but we've
 found this to be a useful technique in most cases.
+
+Precise Retainer Analysis
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If you want to precisely answer questions about why a certain type of closure is
+retained then it is worthwhile using `ghc-debug <https://gitlab.haskell.org/ghc/ghc-debug>`_ which
+has a terminal interface which can be used to easily answer queries such as, what is retaining
+a certain closure.
 
 .. _biography-prof:
 
@@ -985,12 +1249,12 @@ reasons for this:
    ⟨factor⟩` option. Also add the size of the allocation area (see :rts-flag:`-A
    ⟨size⟩`).
 
--  The stack isn't counted in the heap profile by default. See the
-   RTS :rts-flag:`-xt` option.
-
 -  The program text itself, the C stack, any non-heap data (e.g. data
    allocated by foreign libraries, and data allocated by the RTS), and
    ``mmap()``\'d memory are not counted in the heap profile.
+
+For more discussion about understanding how understanding process residency see
+:ref:`hints-os-memory`.
 
 .. _hp2ps:
 
@@ -1114,123 +1378,6 @@ The flags are:
 
     Print out usage information.
 
-.. _manipulating-hp:
-
-Manipulating the ``hp`` file
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-(Notes kindly offered by Jan-Willem Maessen.)
-
-The ``FOO.hp`` file produced when you ask for the heap profile of a
-program ``FOO`` is a text file with a particularly simple structure.
-Here's a representative example, with much of the actual data omitted:
-
-.. code-block:: none
-
-    JOB "FOO -hC"
-    DATE "Thu Dec 26 18:17 2002"
-    SAMPLE_UNIT "seconds"
-    VALUE_UNIT "bytes"
-    BEGIN_SAMPLE 0.00
-    END_SAMPLE 0.00
-    BEGIN_SAMPLE 15.07
-      ... sample data ...
-    END_SAMPLE 15.07
-    BEGIN_SAMPLE 30.23
-      ... sample data ...
-    END_SAMPLE 30.23
-    ... etc.
-    BEGIN_SAMPLE 11695.47
-    END_SAMPLE 11695.47
-
-The first four lines (``JOB``, ``DATE``, ``SAMPLE_UNIT``,
-``VALUE_UNIT``) form a header. Each block of lines starting with
-``BEGIN_SAMPLE`` and ending with ``END_SAMPLE`` forms a single sample
-(you can think of this as a vertical slice of your heap profile). The
-hp2ps utility should accept any input with a properly-formatted header
-followed by a series of *complete* samples.
-
-Zooming in on regions of your profile
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-You can look at particular regions of your profile simply by loading a
-copy of the ``.hp`` file into a text editor and deleting the unwanted
-samples. The resulting ``.hp`` file can be run through ``hp2ps`` and
-viewed or printed.
-
-Viewing the heap profile of a running program
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The ``.hp`` file is generated incrementally as your program runs. In
-principle, running :command:`hp2ps` on the incomplete file should produce a
-snapshot of your program's heap usage. However, the last sample in the
-file may be incomplete, causing :command:`hp2ps` to fail. If you are using a
-machine with UNIX utilities installed, it's not too hard to work around
-this problem (though the resulting command line looks rather Byzantine):
-
-.. code-block:: sh
-
-    head -`fgrep -n END_SAMPLE FOO.hp | tail -1 | cut -d : -f 1` FOO.hp \
-        | hp2ps > FOO.ps
-
-The command ``fgrep -n END_SAMPLE FOO.hp`` finds the end of every
-complete sample in ``FOO.hp``, and labels each sample with its ending
-line number. We then select the line number of the last complete sample
-using :command:`tail` and :command:`cut`. This is used as a parameter to :command:`head`; the
-result is as if we deleted the final incomplete sample from :file:`FOO.hp`.
-This results in a properly-formatted .hp file which we feed directly to
-:command:`hp2ps`.
-
-Viewing a heap profile in real time
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-The :command:`gv` and :command:`ghostview` programs have a "watch file" option
-can be used to view an up-to-date heap profile of your program as it runs.
-Simply generate an incremental heap profile as described in the previous
-section. Run :command:`gv` on your profile:
-
-.. code-block:: sh
-
-      gv -watch -orientation=seascape FOO.ps
-
-If you forget the ``-watch`` flag you can still select "Watch file" from
-the "State" menu. Now each time you generate a new profile ``FOO.ps``
-the view will update automatically.
-
-This can all be encapsulated in a little script:
-
-.. code-block:: sh
-
-      #!/bin/sh
-      head -`fgrep -n END_SAMPLE FOO.hp | tail -1 | cut -d : -f 1` FOO.hp \
-        | hp2ps > FOO.ps
-      gv -watch -orientation=seascape FOO.ps &
-      while [ 1 ] ; do
-        sleep 10 # We generate a new profile every 10 seconds.
-        head -`fgrep -n END_SAMPLE FOO.hp | tail -1 | cut -d : -f 1` FOO.hp \
-          | hp2ps > FOO.ps
-      done
-
-Occasionally :command:`gv` will choke as it tries to read an incomplete copy of
-:file:`FOO.ps` (because :command:`hp2ps` is still running as an update occurs). A
-slightly more complicated script works around this problem, by using the
-fact that sending a SIGHUP to gv will cause it to re-read its input
-file:
-
-.. code-block:: sh
-
-      #!/bin/sh
-      head -`fgrep -n END_SAMPLE FOO.hp | tail -1 | cut -d : -f 1` FOO.hp \
-        | hp2ps > FOO.ps
-      gv FOO.ps &
-      gvpsnum=$!
-      while [ 1 ] ; do
-        sleep 10
-        head -`fgrep -n END_SAMPLE FOO.hp | tail -1 | cut -d : -f 1` FOO.hp \
-          | hp2ps > FOO.ps
-        kill -HUP $gvpsnum
-      done
-
 .. _prof-threaded:
 
 Profiling Parallel and Concurrent Programs
@@ -1254,7 +1401,7 @@ counts are also stored in shared memory, and continuously updating them
 on multiple cores is extremely slow.
 
 We also recommend using
-`ThreadScope <http://www.haskell.org/haskellwiki/ThreadScope>`__ for
+`ThreadScope <https://www.haskell.org/haskellwiki/ThreadScope>`__ for
 profiling parallel programs; it offers a GUI for visualising parallel
 execution, and is complementary to the time and space profiling features
 provided with GHC.
@@ -1409,6 +1556,18 @@ Options for instrumenting code for coverage
     will only be generated for those modules that were compiled with
     :ghc-flag:`-fhpc`, and the :command:`hpc` tool will only show information about
     those modules.
+
+.. ghc-flag:: -hpcdir⟨dir⟩
+    :shortdesc: Set the directory where GHC places ``.mix`` files.
+    :type: dynamic
+    :category: coverage
+
+    :default: .hpc
+
+    Override the directory where GHC places the HPC index
+    (``.mix``) files used by ``hpc`` to understand program
+    structure.
+
 
 The hpc toolkit
 ~~~~~~~~~~~~~~~
@@ -1618,21 +1777,219 @@ Using “ticky-ticky” profiling (for implementors)
    single: ticky-ticky profiling
 
 .. ghc-flag:: -ticky
-    :shortdesc: :ref:`Turn on ticky-ticky profiling <ticky-ticky>`
+    :shortdesc: Turn on :ref:`ticky-ticky profiling <ticky-ticky>`
     :type: dynamic
     :category:
 
-    Enable ticky-ticky profiling.
+    Enable ticky-ticky profiling. By default this only tracks the allocations
+    *by* each closure type. See :ghc-flag:`-ticky-allocd` to keep track of
+    allocations *of* each closure type as well.
 
+
+GHC's ticky-ticky profiler provides a low-level facility for tracking
+entry and allocation counts of particular individual closures.
+Ticky-ticky profiling requires a certain familiarity with GHC
+internals, so it is best suited for expert users, but can provide an invaluable
+precise insight into the allocation behaviour of your programs.
+
+Getting started with ticky profiling consists of three steps.
+
+1. Add the ``-ticky`` flag when compiling a Haskell module to enable "ticky-ticky" profiling of that module. This makes GHC emit performance-counting instructions in every STG function.
+
+2. Add ``-ticky`` to the command line when linking, so that you link against a version of the runtime system that allows you to display the results. In fact, in the link phase -ticky implies -debug, so you get the debug version of the runtime system too.
+
+3. Then when running your program you can collect the results of the profiling in two ways.
+
+  * Using the eventlog, the :rts-flag:`-lT <-l ⟨flags⟩>` flag will emit ticky samples
+    to the eventlog periodically.
+    This has the advantage of being able to resolve dynamic behaviors over the program's
+    lifetime. See :ref:`ticky-event-format` for details on the event types
+    reported. The ticky information can be rendered into an interactive table
+    using eventlog2html.
+  * A legacy textual format is emitted using the :rts-flag:`-r ⟨file⟩` flag. This
+    produces a textual table containing information about how much each counter
+    ticked throughout the duration of the program.
+
+Additional Ticky Flags
+~~~~~~~~~~~~~~~~~~~~~~
+
+There are some additional flags which can be used to increase the number of
+ticky counters and the quality of the profile.
+
+.. ghc-flag:: -ticky-allocd
+    :shortdesc: Track the number of times each closure type is allocated.
+    :type: dynamic
+    :category:
+
+    Keep track of how much each closure type is allocated.
+
+.. ghc-flag:: -ticky-dyn-thunk
+    :shortdesc: Track allocations of dynamic thunks
+    :type: dynamic
+    :category:
+
+    Track allocations of dynamic thunks.
+
+.. ghc-flag:: -ticky-LNE
+    :shortdesc: Treat join point binders similar to thunks/functions.
+    :type: dynamic
+    :category:
+
+    These are not allocated, and can be very performance sensitive so we usually don't
+    want to run ticky counters for these to avoid even worse performance for tickied builds.
+
+    But sometimes having information about these binders is critical. So we have a flag to ticky them
+    anyway.
+
+.. ghc-flag:: -ticky-tag-checks
+    :shortdesc: Emit dummy ticky counters to record how many tag-inference checks tag inference avoided.
+    :type: dynamic
+    :category:
+
+    These dummy counters contain:
+
+    * The number of avoided tag checks in the entry count.
+    * "infer" as the argument string to distinguish them from regular counters.
+    * The name of the variable we are casing on, as well as a unique to represent the inspection site as one variable might be cased on multiple times.
+      The unique comes first with the variable coming at the end. Like this: ``u10_s98c (Main) at nofib/spectral/simple/Main.hs:677:1 in u10``
+      where `u10` is the variable and `u10_s98c` the unique associated with the inspection site.
+
+    Note that these counters are currently not processed well be eventlog2html. So if you want to check them you will have to use the text based interface.
+
+.. ghc-flag:: -ticky-ap-thunk
+    :shortdesc: Don't use standard AP thunks on order to get more reliable entry counters.
+    :type: dynamic
+    :category:
+
+    This allows us to get accurate entry counters for code like `f x y` at the cost of code size.
+    We do this but not using the precomputed standard AP thunk code.
+
+GHC's ticky-ticky profiler provides a low-level facility for tracking
+entry and allocation counts of particular individual closures.
 Because ticky-ticky profiling requires a certain familiarity with GHC
 internals, we have moved the documentation to the GHC developers wiki.
 Take a look at its
-:ghc-wiki:`overview of the profiling options <Commentary/Profiling>`,
-which includeds a link to the ticky-ticky profiling page.
+:ghc-wiki:`overview of the profiling options <commentary/profiling>`,
+which includes a link to the ticky-ticky profiling page.
+
+Note that ticky-ticky samples can be emitted in two formats: the eventlog,
+using the :rts-flag:`-lT <-l ⟨flags⟩>` event type, and a plain text
+summary format, using the :rts-flag:`-r ⟨file⟩` option. The former has the
+advantage of being able to resolve dynamic behaviors over the program's
+lifetime. See :ref:`ticky-event-format` for details on the event types
+reported.
+
+Understanding the Output of Ticky-Ticky profiles
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Once you have your rendered profile then you can begin to understand the allocation
+behaviour of your program. There are two classes of ticky-ticky counters.
+
+Name-specific counters
+
+  Each "name-specific counter" is associated with a name that is defined in the
+  result of the optimiser. For each such name, there are three possible counters:
+  entries, heap allocation by the named thing, and heap used to allocate that
+  named thing.
+
+Global counters
+
+  Each "global counter" describes some aspect of the entire program execution.
+  For example, one global counter tracks total heap allocation; another tracks allocation for PAPs.
+
+In general you are probably interested mostly in the name-specific counters as these
+can provided detailed information about where allocates how much in your program.
+
+Information about name-specific counters
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Name-specific counters provide the following information about a closure.
+
+* Entries - How many times the closure was entered.
+* Allocs  - How much (in bytes) is allocated *by* that closure.
+* Allod   - How often the closure is allocated.
+* FVs     - The free variables captured by that closure.
+* Args    - The arguments that closure takes.
+
+The FVs and Args information is encoded using a small DSL.
+
++------------------+---------------------------------------------------+
+| Classification   | Description                                       |
++==================+===================================================+
+| ``+``            | dictionary                                        |
++------------------+---------------------------------------------------+
+| ``\>``           | function                                          |
++------------------+---------------------------------------------------+
+| ``{C,I,F,D,W}``  | char, int, float, double, word                    |
++------------------+---------------------------------------------------+
+| ``{c,i,f,d,w}``  | unboxed ditto                                     |
++------------------+---------------------------------------------------+
+| ``T``            | unboxed tuple                                     |
++------------------+---------------------------------------------------+
+| ``P``            | other primitive type                              |
++------------------+---------------------------------------------------+
+| ``p``            | unboxed primitive type                            |
++------------------+---------------------------------------------------+
+| ``L``            | list                                              |
++------------------+---------------------------------------------------+
+| ``E``            | enumeration type                                  |
++------------------+---------------------------------------------------+
+| ``S``            | single-constructor type                           |
++------------------+---------------------------------------------------+
+| ``M``            | multi-constructor type                            |
++------------------+---------------------------------------------------+
+| ``.``            | other type                                        |
++------------------+---------------------------------------------------+
+| ``-``            | reserved for others to mark as "uninteresting"    |
++------------------+---------------------------------------------------+
+
+In particular note that you can use the ticky profiler to see any function
+calls to dictionary arguments by searching the profile for the ``+`` classifier.
+This indicates that the function has failed to specialise for one reason or another.
+
+Examples
+~~~~~~~~
+
+A typical use of ticky-ticky would be to generate a ticky report using the eventlog by evoking an
+application with RTS arguments like this:
+
+``app <args> +RTS -l-augT``
+
+This will produce an eventlog file which contains results from ticky counters. This file can
+be manually inspected like any regular eventlog. However for ticky-ticky eventlog2html has
+good support for producing tables from these logs.
+
+With an up to date version of eventlog2html this can be simply done by invoking eventlog2html
+on the produced eventlog. In the example above the invocation would then be ``eventlog2html app.eventlog``
+Which will produce a searchable and sortable table containing all the ticky counters in the log.
+
+Notes about ticky profiling
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+* You can mix together modules compiled with and without ``-ticky`` but you will
+  miss out on allocations and counts from uninstrumented modules in the profile.
+
+* Linking with the ``-ticky`` has a quite severe performance impact on your program.
+  ``-ticky`` implies using the unoptimised ``-debug`` RTS. Therefore ``-ticky``
+  shouldn't be used for production builds.
+
+* Building with ``-ticky`` doesn't affect core optimisations of your program as the
+  counters are inserted after the STG pipeline. At which point most optimizations have
+  already been run.
+
+* When using the eventlog it is possible to combine together ticky-ticky and IPE
+  based profiling as each ticky counter definition has an associated info table.
+  This address can be looked up in the IPE map so that further information (such
+  as source location) can be determined about that closure.
+
+* Global ticky counters are only available in the textual ticky output (``+RTS -r``).
+  But this mode has some limitations (e.g. on column widths) and will contain raw json output
+  in some columns. For this reason using an eventlog-based approach should be prefered if
+  possible.
 
 .. [1]
-   :ghc-flag:`-fprof-auto` was known as ``-auto-all`` prior to
-   GHC 7.4.1.
+   :rts-flag:`-hi` profiling is avaible with the normal runtime but you will need to
+   compile with :ghc-flag:`-finfo-table-map` to interpret the results.
 
 .. [2]
    Note that this policy has changed slightly in GHC 7.4.1 relative to

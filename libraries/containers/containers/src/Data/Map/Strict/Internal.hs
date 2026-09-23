@@ -145,6 +145,9 @@ module Data.Map.Strict.Internal
     -- ** Disjoint
     , disjoint
 
+    -- ** Compose
+    , compose
+
     -- ** General combining function
     , SimpleWhenMissing
     , SimpleWhenMatched
@@ -223,7 +226,9 @@ module Data.Map.Strict.Internal
     , keys
     , assocs
     , keysSet
+    , argSet
     , fromSet
+    , fromArgSet
 
     -- ** Lists
     , toList
@@ -296,14 +301,16 @@ module Data.Map.Strict.Internal
     , maxViewWithKey
 
     -- * Debugging
-#if defined(__GLASGOW_HASKELL__)
+#ifdef __GLASGOW_HASKELL__
     , showTree
     , showTreeWith
 #endif
     , valid
     ) where
 
-import Prelude hiding (lookup,map,filter,foldr,foldl,null,take,drop,splitAt)
+import Utils.Containers.Internal.Prelude hiding
+  (lookup,map,filter,foldr,foldl,foldl',null,take,drop,splitAt)
+import Prelude ()
 
 import Data.Map.Internal
   ( Map (..)
@@ -321,17 +328,23 @@ import Data.Map.Internal
   , filterAMissing
   , merge
   , mergeA
+  , fromDistinctAscList_linkTop
+  , fromDistinctAscList_linkAll
+  , fromDistinctDescList_linkTop
+  , fromDistinctDescList_linkAll
+  , FromDistinctMonoState (..)
+  , Stack (..)
   , (!)
   , (!?)
   , (\\)
+  , argSet
   , assocs
   , atKeyImpl
-#if MIN_VERSION_base(4,8,0)
   , atKeyPlain
-#endif
   , balance
   , balanceL
   , balanceR
+  , compose
   , elemAt
   , elems
   , empty
@@ -411,26 +424,21 @@ import Data.Map.Internal.DeprecatedShowTree (showTree, showTreeWith)
 import Data.Map.Internal.Debug (valid)
 
 import Control.Applicative (Const (..), liftA3)
-#if !MIN_VERSION_base(4,8,0)
-import Control.Applicative (Applicative (..), (<$>))
-#endif
+import Data.Semigroup (Arg (..))
 import qualified Data.Set.Internal as Set
 import qualified Data.Map.Internal as L
 import Utils.Containers.Internal.StrictPair
 
 import Data.Bits (shiftL, shiftR)
-#if __GLASGOW_HASKELL__ >= 709
+#ifdef __GLASGOW_HASKELL__
 import Data.Coerce
 #endif
 
-#if __GLASGOW_HASKELL__ && MIN_VERSION_base(4,8,0)
+#ifdef __GLASGOW_HASKELL__
 import Data.Functor.Identity (Identity (..))
 #endif
 
 import qualified Data.Foldable as Foldable
-#if !MIN_VERSION_base(4,8,0)
-import Data.Foldable (Foldable())
-#endif
 
 -- $strictness
 --
@@ -465,7 +473,7 @@ import Data.Foldable (Foldable())
   Query
 --------------------------------------------------------------------}
 
--- | /O(log n)/. The expression @('findWithDefault' def k map)@ returns
+-- | \(O(\log n)\). The expression @('findWithDefault' def k map)@ returns
 -- the value at key @k@ or returns default value @def@
 -- when the key is not in the map.
 --
@@ -491,7 +499,7 @@ findWithDefault def k = k `seq` go
   Construction
 --------------------------------------------------------------------}
 
--- | /O(1)/. A map with a single element.
+-- | \(O(1)\). A map with a single element.
 --
 -- > singleton 1 'a'        == fromList [(1, 'a')]
 -- > size (singleton 1 'a') == 1
@@ -503,7 +511,7 @@ singleton k x = x `seq` Bin 1 k x Tip Tip
 {--------------------------------------------------------------------
   Insertion
 --------------------------------------------------------------------}
--- | /O(log n)/. Insert a new key and value in the map.
+-- | \(O(\log n)\). Insert a new key and value in the map.
 -- If the key is already present in the map, the associated value is
 -- replaced with the supplied value. 'insert' is equivalent to
 -- @'insertWith' 'const'@.
@@ -529,7 +537,7 @@ insert = go
 {-# INLINE insert #-}
 #endif
 
--- | /O(log n)/. Insert with a function, combining new value and old value.
+-- | \(O(\log n)\). Insert with a function, combining new value and old value.
 -- @'insertWith' f key value mp@
 -- will insert the pair (key, value) into @mp@ if key does
 -- not exist in the map. If the key does exist, the function will
@@ -538,6 +546,8 @@ insert = go
 -- > insertWith (++) 5 "xxx" (fromList [(5,"a"), (3,"b")]) == fromList [(3, "b"), (5, "xxxa")]
 -- > insertWith (++) 7 "xxx" (fromList [(5,"a"), (3,"b")]) == fromList [(3, "b"), (5, "a"), (7, "xxx")]
 -- > insertWith (++) 5 "xxx" empty                         == singleton 5 "xxx"
+--
+-- Also see the performance note on 'fromListWith'.
 
 insertWith :: Ord k => (a -> a -> a) -> k -> a -> Map k a -> Map k a
 insertWith = go
@@ -571,7 +581,7 @@ insertWithR = go
 {-# INLINE insertWithR #-}
 #endif
 
--- | /O(log n)/. Insert with a function, combining key, new value and old value.
+-- | \(O(\log n)\). Insert with a function, combining key, new value and old value.
 -- @'insertWithKey' f key value mp@
 -- will insert the pair (key, value) into @mp@ if key does
 -- not exist in the map. If the key does exist, the function will
@@ -582,6 +592,8 @@ insertWithR = go
 -- > insertWithKey f 5 "xxx" (fromList [(5,"a"), (3,"b")]) == fromList [(3, "b"), (5, "5:xxx|a")]
 -- > insertWithKey f 7 "xxx" (fromList [(5,"a"), (3,"b")]) == fromList [(3, "b"), (5, "a"), (7, "xxx")]
 -- > insertWithKey f 5 "xxx" empty                         == singleton 5 "xxx"
+--
+-- Also see the performance note on 'fromListWith'.
 
 -- See Map.Internal.Note: Type of local 'go' function
 insertWithKey :: Ord k => (k -> a -> a -> a) -> k -> a -> Map k a -> Map k a
@@ -622,7 +634,7 @@ insertWithKeyR = go
 {-# INLINE insertWithKeyR #-}
 #endif
 
--- | /O(log n)/. Combines insert operation with old value retrieval.
+-- | \(O(\log n)\). Combines insert operation with old value retrieval.
 -- The expression (@'insertLookupWithKey' f k x map@)
 -- is a pair where the first element is equal to (@'lookup' k map@)
 -- and the second element equal to (@'insertWithKey' f k x map@).
@@ -637,6 +649,8 @@ insertWithKeyR = go
 -- > let insertLookup kx x t = insertLookupWithKey (\_ a _ -> a) kx x t
 -- > insertLookup 5 "x" (fromList [(5,"a"), (3,"b")]) == (Just "a", fromList [(3, "b"), (5, "x")])
 -- > insertLookup 7 "x" (fromList [(5,"a"), (3,"b")]) == (Nothing,  fromList [(3, "b"), (5, "a"), (7, "x")])
+--
+-- Also see the performance note on 'fromListWith'.
 
 -- See Map.Internal.Note: Type of local 'go' function
 insertLookupWithKey :: Ord k => (k -> a -> a -> a) -> k -> a -> Map k a
@@ -663,7 +677,7 @@ insertLookupWithKey f0 kx0 x0 t0 = toPair $ go f0 kx0 x0 t0
   Deletion
 --------------------------------------------------------------------}
 
--- | /O(log n)/. Update a value at a specific key with the result of the provided function.
+-- | \(O(\log n)\). Update a value at a specific key with the result of the provided function.
 -- When the key is not
 -- a member of the map, the original map is returned.
 --
@@ -679,7 +693,7 @@ adjust f = adjustWithKey (\_ x -> f x)
 {-# INLINE adjust #-}
 #endif
 
--- | /O(log n)/. Adjust a value at a specific key. When the key is not
+-- | \(O(\log n)\). Adjust a value at a specific key. When the key is not
 -- a member of the map, the original map is returned.
 --
 -- > let f key x = (show key) ++ ":new " ++ x
@@ -704,7 +718,7 @@ adjustWithKey = go
 {-# INLINE adjustWithKey #-}
 #endif
 
--- | /O(log n)/. The expression (@'update' f k map@) updates the value @x@
+-- | \(O(\log n)\). The expression (@'update' f k map@) updates the value @x@
 -- at @k@ (if it is in the map). If (@f x@) is 'Nothing', the element is
 -- deleted. If it is (@'Just' y@), the key @k@ is bound to the new value @y@.
 --
@@ -721,7 +735,7 @@ update f = updateWithKey (\_ x -> f x)
 {-# INLINE update #-}
 #endif
 
--- | /O(log n)/. The expression (@'updateWithKey' f k map@) updates the
+-- | \(O(\log n)\). The expression (@'updateWithKey' f k map@) updates the
 -- value @x@ at @k@ (if it is in the map). If (@f k x@) is 'Nothing',
 -- the element is deleted. If it is (@'Just' y@), the key @k@ is bound
 -- to the new value @y@.
@@ -750,7 +764,7 @@ updateWithKey = go
 {-# INLINE updateWithKey #-}
 #endif
 
--- | /O(log n)/. Lookup and update. See also 'updateWithKey'.
+-- | \(O(\log n)\). Lookup and update. See also 'updateWithKey'.
 -- The function returns changed value, if it is updated.
 -- Returns the original key value if the map entry is deleted.
 --
@@ -780,7 +794,7 @@ updateLookupWithKey f0 k0 t0 = toPair $ go f0 k0 t0
 {-# INLINE updateLookupWithKey #-}
 #endif
 
--- | /O(log n)/. The expression (@'alter' f k map@) alters the value @x@ at @k@, or absence thereof.
+-- | \(O(\log n)\). The expression (@'alter' f k map@) alters the value @x@ at @k@, or absence thereof.
 -- 'alter' can be used to insert, delete, or update a value in a 'Map'.
 -- In short : @'lookup' k ('alter' f k m) = f ('lookup' k m)@.
 --
@@ -791,6 +805,8 @@ updateLookupWithKey f0 k0 t0 = toPair $ go f0 k0 t0
 -- > let f _ = Just "c"
 -- > alter f 7 (fromList [(5,"a"), (3,"b")]) == fromList [(3, "b"), (5, "a"), (7, "c")]
 -- > alter f 5 (fromList [(5,"a"), (3,"b")]) == fromList [(3, "b"), (5, "c")]
+--
+-- Note that @'adjust' = alter . fmap@.
 
 -- See Map.Internal.Note: Type of local 'go' function
 alter :: Ord k => (Maybe a -> Maybe a) -> k -> Map k a -> Map k a
@@ -813,7 +829,7 @@ alter = go
 {-# INLINE alter #-}
 #endif
 
--- | /O(log n)/. The expression (@'alterF' f k map@) alters the value @x@ at @k@, or absence thereof.
+-- | \(O(\log n)\). The expression (@'alterF' f k map@) alters the value @x@ at @k@, or absence thereof.
 -- 'alterF' can be used to inspect, insert, delete, or update a value in a 'Map'.
 -- In short: @'lookup' k \<$\> 'alterF' f k m = f ('lookup' k m)@.
 --
@@ -851,6 +867,8 @@ alter = go
 --
 -- Note: 'alterF' is a flipped version of the @at@ combinator from
 -- @Control.Lens.At@.
+--
+-- @since 0.5.8
 alterF :: (Functor f, Ord k)
        => (Maybe a -> f (Maybe a)) -> k -> Map k a -> f (Map k a)
 alterF f k m = atKeyImpl Strict k f m
@@ -864,11 +882,6 @@ alterF f k m = atKeyImpl Strict k f m
 -- `Control.Applicative.Const` and just doing a lookup.
 {-# RULES
 "alterF/Const" forall k (f :: Maybe a -> Const b (Maybe a)) . alterF f k = \m -> Const . getConst . f $ lookup k m
- #-}
-#if MIN_VERSION_base(4,8,0)
--- base 4.8 and above include Data.Functor.Identity, so we can
--- save a pretty decent amount of time by handling it specially.
-{-# RULES
 "alterF/Identity" forall k f . alterF f k = atKeyIdentity k f
  #-}
 
@@ -876,13 +889,12 @@ atKeyIdentity :: Ord k => k -> (Maybe a -> Identity (Maybe a)) -> Map k a -> Ide
 atKeyIdentity k f t = Identity $ atKeyPlain Strict k (coerce f) t
 {-# INLINABLE atKeyIdentity #-}
 #endif
-#endif
 
 {--------------------------------------------------------------------
   Indexing
 --------------------------------------------------------------------}
 
--- | /O(log n)/. Update the element at /index/. Calls 'error' when an
+-- | \(O(\log n)\). Update the element at /index/. Calls 'error' when an
 -- invalid index is used.
 --
 -- > updateAt (\ _ _ -> Just "x") 0    (fromList [(5,"a"), (3,"b")]) == fromList [(3, "x"), (5, "a")]
@@ -911,7 +923,7 @@ updateAt f i t = i `seq`
   Minimal, Maximal
 --------------------------------------------------------------------}
 
--- | /O(log n)/. Update the value at the minimal key.
+-- | \(O(\log n)\). Update the value at the minimal key.
 --
 -- > updateMin (\ a -> Just ("X" ++ a)) (fromList [(5,"a"), (3,"b")]) == fromList [(3, "Xb"), (5, "a")]
 -- > updateMin (\ _ -> Nothing)         (fromList [(5,"a"), (3,"b")]) == singleton 5 "a"
@@ -920,7 +932,7 @@ updateMin :: (a -> Maybe a) -> Map k a -> Map k a
 updateMin f m
   = updateMinWithKey (\_ x -> f x) m
 
--- | /O(log n)/. Update the value at the maximal key.
+-- | \(O(\log n)\). Update the value at the maximal key.
 --
 -- > updateMax (\ a -> Just ("X" ++ a)) (fromList [(5,"a"), (3,"b")]) == fromList [(3, "b"), (5, "Xa")]
 -- > updateMax (\ _ -> Nothing)         (fromList [(5,"a"), (3,"b")]) == singleton 3 "b"
@@ -930,7 +942,7 @@ updateMax f m
   = updateMaxWithKey (\_ x -> f x) m
 
 
--- | /O(log n)/. Update the value at the minimal key.
+-- | \(O(\log n)\). Update the value at the minimal key.
 --
 -- > updateMinWithKey (\ k a -> Just ((show k) ++ ":" ++ a)) (fromList [(5,"a"), (3,"b")]) == fromList [(3,"3:b"), (5,"a")]
 -- > updateMinWithKey (\ _ _ -> Nothing)                     (fromList [(5,"a"), (3,"b")]) == singleton 5 "a"
@@ -942,7 +954,7 @@ updateMinWithKey f (Bin sx kx x Tip r) = case f kx x of
                                            Just x' -> x' `seq` Bin sx kx x' Tip r
 updateMinWithKey f (Bin _ kx x l r)    = balanceR kx x (updateMinWithKey f l) r
 
--- | /O(log n)/. Update the value at the maximal key.
+-- | \(O(\log n)\). Update the value at the maximal key.
 --
 -- > updateMaxWithKey (\ k a -> Just ((show k) ++ ":" ++ a)) (fromList [(5,"a"), (3,"b")]) == fromList [(3,"b"), (5,"5:a")]
 -- > updateMaxWithKey (\ _ _ -> Nothing)                     (fromList [(5,"a"), (3,"b")]) == singleton 3 "b"
@@ -974,9 +986,11 @@ unionsWith f ts
 {--------------------------------------------------------------------
   Union with a combining function
 --------------------------------------------------------------------}
--- | /O(m*log(n\/m + 1)), m <= n/. Union with a combining function.
+-- | \(O\bigl(m \log\bigl(\frac{n}{m}+1\bigr)\bigr), \; 0 < m \leq n\). Union with a combining function.
 --
 -- > unionWith (++) (fromList [(5, "a"), (3, "b")]) (fromList [(5, "A"), (7, "C")]) == fromList [(3, "b"), (5, "aA"), (7, "C")]
+--
+-- Also see the performance note on 'fromListWith'.
 
 unionWith :: Ord k => (a -> a -> a) -> Map k a -> Map k a -> Map k a
 unionWith _f t1 Tip = t1
@@ -990,11 +1004,13 @@ unionWith f (Bin _ k1 x1 l1 r1) t2 = case splitLookup k1 t2 of
 {-# INLINABLE unionWith #-}
 #endif
 
--- | /O(m*log(n\/m + 1)), m <= n/.
+-- | \(O\bigl(m \log\bigl(\frac{n}{m}+1\bigr)\bigr), \; 0 < m \leq n\).
 -- Union with a combining function.
 --
 -- > let f key left_value right_value = (show key) ++ ":" ++ left_value ++ "|" ++ right_value
 -- > unionWithKey f (fromList [(5, "a"), (3, "b")]) (fromList [(5, "A"), (7, "C")]) == fromList [(3, "b"), (5, "5:a|A"), (7, "C")]
+--
+-- Also see the performance note on 'fromListWith'.
 
 unionWithKey :: Ord k => (k -> a -> a -> a) -> Map k a -> Map k a -> Map k a
 unionWithKey _f t1 Tip = t1
@@ -1012,7 +1028,7 @@ unionWithKey f (Bin _ k1 x1 l1 r1) t2 = case splitLookup k1 t2 of
   Difference
 --------------------------------------------------------------------}
 
--- | /O(n+m)/. Difference with a combining function.
+-- | \(O(n+m)\). Difference with a combining function.
 -- When two equal keys are
 -- encountered, the combining function is applied to the values of these keys.
 -- If it returns 'Nothing', the element is discarded (proper set difference). If
@@ -1028,7 +1044,7 @@ differenceWith f = merge preserveMissing dropMissing (zipWithMaybeMatched $ \_ x
 {-# INLINABLE differenceWith #-}
 #endif
 
--- | /O(n+m)/. Difference with a combining function. When two equal keys are
+-- | \(O(n+m)\). Difference with a combining function. When two equal keys are
 -- encountered, the combining function is applied to the key and both values.
 -- If it returns 'Nothing', the element is discarded (proper set difference). If
 -- it returns (@'Just' y@), the element is updated with a new value @y@.
@@ -1048,7 +1064,7 @@ differenceWithKey f = merge preserveMissing dropMissing (zipWithMaybeMatched f)
   Intersection
 --------------------------------------------------------------------}
 
--- | /O(m*log(n\/m + 1)), m <= n/. Intersection with a combining function.
+-- | \(O\bigl(m \log\bigl(\frac{n}{m}+1\bigr)\bigr), \; 0 < m \leq n\). Intersection with a combining function.
 --
 -- > intersectionWith (++) (fromList [(5, "a"), (3, "b")]) (fromList [(5, "A"), (7, "C")]) == singleton 5 "aA"
 
@@ -1066,7 +1082,7 @@ intersectionWith f (Bin _ k x1 l1 r1) t2 = case mb of
 {-# INLINABLE intersectionWith #-}
 #endif
 
--- | /O(m*log(n\/m + 1)), m <= n/. Intersection with a combining function.
+-- | \(O\bigl(m \log\bigl(\frac{n}{m}+1\bigr)\bigr), \; 0 < m \leq n\). Intersection with a combining function.
 --
 -- > let f k al ar = (show k) ++ ":" ++ al ++ "|" ++ ar
 -- > intersectionWithKey f (fromList [(5, "a"), (3, "b")]) (fromList [(5, "A"), (7, "C")]) == singleton 5 "5:a|A"
@@ -1204,7 +1220,7 @@ forceMaybe m@(Just !_) = m
   MergeWithKey
 --------------------------------------------------------------------}
 
--- | /O(n+m)/. An unsafe universal combining function.
+-- | \(O(n+m)\). An unsafe universal combining function.
 --
 -- WARNING: This function can produce corrupt maps and its results
 -- may depend on the internal structures of its inputs. Users should
@@ -1266,7 +1282,7 @@ mergeWithKey f g1 g2 = go
   Filter and partition
 --------------------------------------------------------------------}
 
--- | /O(n)/. Map values and collect the 'Just' results.
+-- | \(O(n)\). Map values and collect the 'Just' results.
 --
 -- > let f x = if x == "a" then Just "new a" else Nothing
 -- > mapMaybe f (fromList [(5,"a"), (3,"b")]) == singleton 5 "new a"
@@ -1274,7 +1290,7 @@ mergeWithKey f g1 g2 = go
 mapMaybe :: (a -> Maybe b) -> Map k a -> Map k b
 mapMaybe f = mapMaybeWithKey (\_ x -> f x)
 
--- | /O(n)/. Map keys\/values and collect the 'Just' results.
+-- | \(O(n)\). Map keys\/values and collect the 'Just' results.
 --
 -- > let f k _ = if k < 5 then Just ("key : " ++ (show k)) else Nothing
 -- > mapMaybeWithKey f (fromList [(5,"a"), (3,"b")]) == singleton 3 "key : 3"
@@ -1285,7 +1301,7 @@ mapMaybeWithKey f (Bin _ kx x l r) = case f kx x of
   Just y  -> y `seq` link kx y (mapMaybeWithKey f l) (mapMaybeWithKey f r)
   Nothing -> link2 (mapMaybeWithKey f l) (mapMaybeWithKey f r)
 
--- | /O(n)/. Traverse keys\/values and collect the 'Just' results.
+-- | \(O(n)\). Traverse keys\/values and collect the 'Just' results.
 --
 -- @since 0.5.8
 
@@ -1301,7 +1317,7 @@ traverseMaybeWithKey = go
           Nothing -> link2 l' r'
           Just !x' -> link kx x' l' r'
 
--- | /O(n)/. Map values and separate the 'Left' and 'Right' results.
+-- | \(O(n)\). Map values and separate the 'Left' and 'Right' results.
 --
 -- > let f a = if a < "c" then Left a else Right a
 -- > mapEither f (fromList [(5,"a"), (3,"b"), (1,"x"), (7,"z")])
@@ -1314,7 +1330,7 @@ mapEither :: (a -> Either b c) -> Map k a -> (Map k b, Map k c)
 mapEither f m
   = mapEitherWithKey (\_ x -> f x) m
 
--- | /O(n)/. Map keys\/values and separate the 'Left' and 'Right' results.
+-- | \(O(n)\). Map keys\/values and separate the 'Left' and 'Right' results.
 --
 -- > let f k a = if k < 5 then Left (k * 2) else Right (a ++ a)
 -- > mapEitherWithKey f (fromList [(5,"a"), (3,"b"), (1,"x"), (7,"z")])
@@ -1337,7 +1353,7 @@ mapEitherWithKey f0 t0 = toPair $ go f0 t0
 {--------------------------------------------------------------------
   Mapping
 --------------------------------------------------------------------}
--- | /O(n)/. Map a function over all values in the map.
+-- | \(O(n)\). Map a function over all values in the map.
 --
 -- > map (++ "x") (fromList [(5,"a"), (3,"b")]) == fromList [(3, "bx"), (5, "ax")]
 
@@ -1357,7 +1373,7 @@ map f = go
  #-}
 #endif
 
--- | /O(n)/. Map a function over all values in the map.
+-- | \(O(n)\). Map a function over all values in the map.
 --
 -- > let f key x = (show key) ++ ":" ++ x
 -- > mapWithKey f (fromList [(5,"a"), (3,"b")]) == fromList [(3, "3:b"), (5, "5:a")]
@@ -1386,8 +1402,8 @@ mapWithKey f (Bin sx kx x l r) =
  #-}
 #endif
 
--- | /O(n)/.
--- @'traverseWithKey' f m == 'fromList' <$> 'traverse' (\(k, v) -> (\v' -> v' \`seq\` (k,v')) <$> f k v) ('toList' m)@
+-- | \(O(n)\).
+-- @'traverseWithKey' f m == 'fromList' \<$\> 'traverse' (\\(k, v) -> (\v' -> v' \`seq\` (k,v')) \<$\> f k v) ('toList' m)@
 -- That is, it behaves much like a regular 'traverse' except that the traversing
 -- function also has access to the key associated with a value and the values are
 -- forced before they are installed in the result map.
@@ -1402,7 +1418,7 @@ traverseWithKey f = go
     go (Bin s k v l r) = liftA3 (\ l' !v' r' -> Bin s k v' l' r') (go l) (f k v) (go r)
 {-# INLINE traverseWithKey #-}
 
--- | /O(n)/. The function 'mapAccum' threads an accumulating
+-- | \(O(n)\). The function 'mapAccum' threads an accumulating
 -- argument through the map in ascending order of keys.
 --
 -- > let f a b = (a ++ b, b ++ "X")
@@ -1412,7 +1428,7 @@ mapAccum :: (a -> b -> (a,c)) -> a -> Map k b -> (a,Map k c)
 mapAccum f a m
   = mapAccumWithKey (\a' _ x' -> f a' x') a m
 
--- | /O(n)/. The function 'mapAccumWithKey' threads an accumulating
+-- | \(O(n)\). The function 'mapAccumWithKey' threads an accumulating
 -- argument through the map in ascending order of keys.
 --
 -- > let f a k b = (a ++ " " ++ (show k) ++ "-" ++ b, b ++ "X")
@@ -1422,7 +1438,7 @@ mapAccumWithKey :: (a -> k -> b -> (a,c)) -> a -> Map k b -> (a,Map k c)
 mapAccumWithKey f a t
   = mapAccumL f a t
 
--- | /O(n)/. The function 'mapAccumL' threads an accumulating
+-- | \(O(n)\). The function 'mapAccumL' threads an accumulating
 -- argument through the map in ascending order of keys.
 mapAccumL :: (a -> k -> b -> (a,c)) -> a -> Map k b -> (a,Map k c)
 mapAccumL _ a Tip               = (a,Tip)
@@ -1432,7 +1448,7 @@ mapAccumL f a (Bin sx kx x l r) =
       (a3,r') = mapAccumL f a2 r
   in x' `seq` (a3,Bin sx kx x' l' r')
 
--- | /O(n)/. The function 'mapAccumR' threads an accumulating
+-- | \(O(n)\). The function 'mapAccumRWithKey' threads an accumulating
 -- argument through the map in descending order of keys.
 mapAccumRWithKey :: (a -> k -> b -> (a,c)) -> a -> Map k b -> (a,Map k c)
 mapAccumRWithKey _ a Tip = (a,Tip)
@@ -1442,7 +1458,7 @@ mapAccumRWithKey f a (Bin sx kx x l r) =
       (a3,l') = mapAccumRWithKey f a2 l
   in x' `seq` (a3,Bin sx kx x' l' r')
 
--- | /O(n*log n)/.
+-- | \(O(n \log n)\).
 -- @'mapKeysWith' c f s@ is the map obtained by applying @f@ to each key of @s@.
 --
 -- The size of the result may be smaller if @f@ maps two or more distinct
@@ -1452,6 +1468,8 @@ mapAccumRWithKey f a (Bin sx kx x l r) =
 --
 -- > mapKeysWith (++) (\ _ -> 1) (fromList [(1,"b"), (2,"a"), (3,"d"), (4,"c")]) == singleton 1 "cdab"
 -- > mapKeysWith (++) (\ _ -> 3) (fromList [(1,"b"), (2,"a"), (3,"d"), (4,"c")]) == singleton 3 "cdab"
+--
+-- Also see the performance note on 'fromListWith'.
 
 mapKeysWith :: Ord k2 => (a -> a -> a) -> (k1->k2) -> Map k1 a -> Map k2 a
 mapKeysWith c f = fromListWith c . foldrWithKey (\k x xs -> (f k, x) : xs) []
@@ -1463,7 +1481,7 @@ mapKeysWith c f = fromListWith c . foldrWithKey (\k x xs -> (f k, x) : xs) []
   Conversions
 --------------------------------------------------------------------}
 
--- | /O(n)/. Build a map from a set of keys and a function which for each key
+-- | \(O(n)\). Build a map from a set of keys and a function which for each key
 -- computes its value.
 --
 -- > fromSet (\k -> replicate k 'a') (Data.Set.fromList [3, 5]) == fromList [(5,"aaaaa"), (3,"aaa")]
@@ -1473,15 +1491,23 @@ fromSet :: (k -> a) -> Set.Set k -> Map k a
 fromSet _ Set.Tip = Tip
 fromSet f (Set.Bin sz x l r) = case f x of v -> v `seq` Bin sz x v (fromSet f l) (fromSet f r)
 
+-- | \(O(n)\). Build a map from a set of elements contained inside 'Arg's.
+--
+-- > fromArgSet (Data.Set.fromList [Arg 3 "aaa", Arg 5 "aaaaa"]) == fromList [(5,"aaaaa"), (3,"aaa")]
+-- > fromArgSet Data.Set.empty == empty
+
+fromArgSet :: Set.Set (Arg k a) -> Map k a
+fromArgSet Set.Tip = Tip
+fromArgSet (Set.Bin sz (Arg x v) l r) = v `seq` Bin sz x v (fromArgSet l) (fromArgSet r)
+
 {--------------------------------------------------------------------
   Lists
 --------------------------------------------------------------------}
--- | /O(n*log n)/. Build a map from a list of key\/value pairs. See also 'fromAscList'.
+-- | \(O(n \log n)\). Build a map from a list of key\/value pairs. See also 'fromAscList'.
 -- If the list contains more than one value for the same key, the last value
 -- for the key is retained.
 --
--- If the keys of the list are ordered, linear-time implementation is used,
--- with the performance equal to 'fromDistinctAscList'.
+-- If the keys of the list are ordered, a linear-time implementation is used.
 --
 -- > fromList [] == empty
 -- > fromList [(5,"a"), (3,"b"), (5, "c")] == fromList [(5,"c"), (3,"b")]
@@ -1528,10 +1554,41 @@ fromList ((kx0, x0) : xs0) | not_ordered kx0 xs0 = x0 `seq` fromList' (Bin 1 kx0
 {-# INLINABLE fromList #-}
 #endif
 
--- | /O(n*log n)/. Build a map from a list of key\/value pairs with a combining function. See also 'fromAscListWith'.
+-- | \(O(n \log n)\). Build a map from a list of key\/value pairs with a combining function. See also 'fromAscListWith'.
 --
--- > fromListWith (++) [(5,"a"), (5,"b"), (3,"b"), (3,"a"), (5,"a")] == fromList [(3, "ab"), (5, "aba")]
+-- > fromListWith (++) [(5,"a"), (5,"b"), (3,"x"), (5,"c")] == fromList [(3, "x"), (5, "cba")]
 -- > fromListWith (++) [] == empty
+--
+-- Note the reverse ordering of @"cba"@ in the example.
+--
+-- The symmetric combining function @f@ is applied in a left-fold over the list, as @f new old@.
+--
+-- === Performance
+--
+-- You should ensure that the given @f@ is fast with this order of arguments.
+--
+-- Symmetric functions may be slow in one order, and fast in another.
+-- For the common case of collecting values of matching keys in a list, as above:
+--
+-- The complexity of @(++) a b@ is \(O(a)\), so it is fast when given a short list as its first argument.
+-- Thus:
+--
+-- > fromListWith       (++)  (replicate 1000000 (3, "x"))   -- O(n),  fast
+-- > fromListWith (flip (++)) (replicate 1000000 (3, "x"))   -- O(n²), extremely slow
+--
+-- because they evaluate as, respectively:
+--
+-- > fromList [(3, "x" ++ ("x" ++ "xxxxx..xxxxx"))]   -- O(n)
+-- > fromList [(3, ("xxxxx..xxxxx" ++ "x") ++ "x")]   -- O(n²)
+--
+-- Thus, to get good performance with an operation like @(++)@ while also preserving
+-- the same order as in the input list, reverse the input:
+--
+-- > fromListWith (++) (reverse [(5,"a"), (5,"b"), (5,"c")]) == fromList [(5, "abc")]
+--
+-- and it is always fast to combine singleton-list values @[v]@ with @fromListWith (++)@, as in:
+--
+-- > fromListWith (++) $ reverse $ map (\(k, v) -> (k, [v])) someListOfTuples
 
 fromListWith :: Ord k => (a -> a -> a) -> [(k,a)] -> Map k a
 fromListWith f xs
@@ -1540,11 +1597,13 @@ fromListWith f xs
 {-# INLINABLE fromListWith #-}
 #endif
 
--- | /O(n*log n)/. Build a map from a list of key\/value pairs with a combining function. See also 'fromAscListWithKey'.
+-- | \(O(n \log n)\). Build a map from a list of key\/value pairs with a combining function. See also 'fromAscListWithKey'.
 --
--- > let f k a1 a2 = (show k) ++ a1 ++ a2
--- > fromListWithKey f [(5,"a"), (5,"b"), (3,"b"), (3,"a"), (5,"a")] == fromList [(3, "3ab"), (5, "5a5ba")]
+-- > let f key new_value old_value = show key ++ ":" ++ new_value ++ "|" ++ old_value
+-- > fromListWithKey f [(5,"a"), (5,"b"), (3,"b"), (3,"a"), (5,"c")] == fromList [(3, "3:a|b"), (5, "5:c|5:b|a")]
 -- > fromListWithKey f [] == empty
+--
+-- Also see the performance note on 'fromListWith'.
 
 fromListWithKey :: Ord k => (k -> a -> a -> a) -> [(k,a)] -> Map k a
 fromListWithKey f xs
@@ -1567,7 +1626,7 @@ fromListWithKey f xs
     fromDescListWith f xs == fromListWith f xs
 --------------------------------------------------------------------}
 
--- | /O(n)/. Build a map from an ascending list in linear time.
+-- | \(O(n)\). Build a map from an ascending list in linear time.
 -- /The precondition (input list is ascending) is not checked./
 --
 -- > fromAscList [(3,"b"), (5,"a")]          == fromList [(3, "b"), (5, "a")]
@@ -1581,7 +1640,7 @@ fromAscList xs
 {-# INLINABLE fromAscList #-}
 #endif
 
--- | /O(n)/. Build a map from a descending list in linear time.
+-- | \(O(n)\). Build a map from a descending list in linear time.
 -- /The precondition (input list is descending) is not checked./
 --
 -- > fromDescList [(5,"a"), (3,"b")]          == fromList [(3, "b"), (5, "a")]
@@ -1595,12 +1654,14 @@ fromDescList xs
 {-# INLINABLE fromDescList #-}
 #endif
 
--- | /O(n)/. Build a map from an ascending list in linear time with a combining function for equal keys.
+-- | \(O(n)\). Build a map from an ascending list in linear time with a combining function for equal keys.
 -- /The precondition (input list is ascending) is not checked./
 --
 -- > fromAscListWith (++) [(3,"b"), (5,"a"), (5,"b")] == fromList [(3, "b"), (5, "ba")]
 -- > valid (fromAscListWith (++) [(3,"b"), (5,"a"), (5,"b")]) == True
 -- > valid (fromAscListWith (++) [(5,"a"), (3,"b"), (5,"b")]) == False
+--
+-- Also see the performance note on 'fromListWith'.
 
 fromAscListWith :: Eq k => (a -> a -> a) -> [(k,a)] -> Map k a
 fromAscListWith f xs
@@ -1609,12 +1670,14 @@ fromAscListWith f xs
 {-# INLINABLE fromAscListWith #-}
 #endif
 
--- | /O(n)/. Build a map from a descending list in linear time with a combining function for equal keys.
+-- | \(O(n)\). Build a map from a descending list in linear time with a combining function for equal keys.
 -- /The precondition (input list is descending) is not checked./
 --
 -- > fromDescListWith (++) [(5,"a"), (5,"b"), (3,"b")] == fromList [(3, "b"), (5, "ba")]
 -- > valid (fromDescListWith (++) [(5,"a"), (5,"b"), (3,"b")]) == True
 -- > valid (fromDescListWith (++) [(5,"a"), (3,"b"), (5,"b")]) == False
+--
+-- Also see the performance note on 'fromListWith'.
 
 fromDescListWith :: Eq k => (a -> a -> a) -> [(k,a)] -> Map k a
 fromDescListWith f xs
@@ -1623,7 +1686,7 @@ fromDescListWith f xs
 {-# INLINABLE fromDescListWith #-}
 #endif
 
--- | /O(n)/. Build a map from an ascending list in linear time with a
+-- | \(O(n)\). Build a map from an ascending list in linear time with a
 -- combining function for equal keys.
 -- /The precondition (input list is ascending) is not checked./
 --
@@ -1631,6 +1694,8 @@ fromDescListWith f xs
 -- > fromAscListWithKey f [(3,"b"), (5,"a"), (5,"b"), (5,"b")] == fromList [(3, "b"), (5, "5:b5:ba")]
 -- > valid (fromAscListWithKey f [(3,"b"), (5,"a"), (5,"b"), (5,"b")]) == True
 -- > valid (fromAscListWithKey f [(5,"a"), (3,"b"), (5,"b"), (5,"b")]) == False
+--
+-- Also see the performance note on 'fromListWith'.
 
 fromAscListWithKey :: Eq k => (k -> a -> a -> a) -> [(k,a)] -> Map k a
 fromAscListWithKey f xs
@@ -1651,7 +1716,7 @@ fromAscListWithKey f xs
 {-# INLINABLE fromAscListWithKey #-}
 #endif
 
--- | /O(n)/. Build a map from a descending list in linear time with a
+-- | \(O(n)\). Build a map from a descending list in linear time with a
 -- combining function for equal keys.
 -- /The precondition (input list is descending) is not checked./
 --
@@ -1659,6 +1724,8 @@ fromAscListWithKey f xs
 -- > fromDescListWithKey f [(5,"a"), (5,"b"), (5,"b"), (3,"b")] == fromList [(3, "b"), (5, "5:b5:ba")]
 -- > valid (fromDescListWithKey f [(5,"a"), (5,"b"), (5,"b"), (3,"b")]) == True
 -- > valid (fromDescListWithKey f [(5,"a"), (3,"b"), (5,"b"), (5,"b")]) == False
+--
+-- Also see the performance note on 'fromListWith'.
 
 fromDescListWithKey :: Eq k => (k -> a -> a -> a) -> [(k,a)] -> Map k a
 fromDescListWithKey f xs
@@ -1679,7 +1746,7 @@ fromDescListWithKey f xs
 {-# INLINABLE fromDescListWithKey #-}
 #endif
 
--- | /O(n)/. Build a map from an ascending list of distinct elements in linear time.
+-- | \(O(n)\). Build a map from an ascending list of distinct elements in linear time.
 -- /The precondition is not checked./
 --
 -- > fromDistinctAscList [(3,"b"), (5,"a")] == fromList [(3, "b"), (5, "a")]
@@ -1688,25 +1755,17 @@ fromDescListWithKey f xs
 
 -- For some reason, when 'singleton' is used in fromDistinctAscList or in
 -- create, it is not inlined, so we inline it manually.
+
+-- See Note [fromDistinctAscList implementation] in Data.Set.Internal.
 fromDistinctAscList :: [(k,a)] -> Map k a
-fromDistinctAscList [] = Tip
-fromDistinctAscList ((kx0, x0) : xs0) = x0 `seq` go (1::Int) (Bin 1 kx0 x0 Tip Tip) xs0
+fromDistinctAscList = fromDistinctAscList_linkAll . Foldable.foldl' next (State0 Nada)
   where
-    go !_ t [] = t
-    go s l ((kx, x) : xs) =
-      case create s xs of
-        (r :*: ys) -> x `seq` let !t' = link kx x l r
-                           in go (s `shiftL` 1) t' ys
+    next :: FromDistinctMonoState k a -> (k,a) -> FromDistinctMonoState k a
+    next (State0 stk) (!kx, !x) = fromDistinctAscList_linkTop (Bin 1 kx x Tip Tip) stk
+    next (State1 l stk) (kx, x) = State0 (Push kx x l stk)
+{-# INLINE fromDistinctAscList #-}  -- INLINE for fusion
 
-    create !_ [] = (Tip :*: [])
-    create s xs@(x' : xs')
-      | s == 1 = case x' of (kx, x) -> x `seq` (Bin 1 kx x Tip Tip :*: xs')
-      | otherwise = case create (s `shiftR` 1) xs of
-                      res@(_ :*: []) -> res
-                      (l :*: (ky, y):ys) -> case create (s `shiftR` 1) ys of
-                        (r :*: zs) -> y `seq` (link ky y l r :*: zs)
-
--- | /O(n)/. Build a map from a descending list of distinct elements in linear time.
+-- | \(O(n)\). Build a map from a descending list of distinct elements in linear time.
 -- /The precondition is not checked./
 --
 -- > fromDistinctDescList [(5,"a"), (3,"b")] == fromList [(3, "b"), (5, "a")]
@@ -1715,20 +1774,12 @@ fromDistinctAscList ((kx0, x0) : xs0) = x0 `seq` go (1::Int) (Bin 1 kx0 x0 Tip T
 
 -- For some reason, when 'singleton' is used in fromDistinctDescList or in
 -- create, it is not inlined, so we inline it manually.
-fromDistinctDescList :: [(k,a)] -> Map k a
-fromDistinctDescList [] = Tip
-fromDistinctDescList ((kx0, x0) : xs0) = x0 `seq` go (1::Int) (Bin 1 kx0 x0 Tip Tip) xs0
-  where
-    go !_ t [] = t
-    go s r ((kx, x) : xs) =
-      case create s xs of
-        (l :*: ys) -> x `seq` let !t' = link kx x l r
-                              in go (s `shiftL` 1) t' ys
 
-    create !_ [] = (Tip :*: [])
-    create s xs@(x' : xs')
-      | s == 1 = case x' of (kx, x) -> x `seq` (Bin 1 kx x Tip Tip :*: xs')
-      | otherwise = case create (s `shiftR` 1) xs of
-                      res@(_ :*: []) -> res
-                      (r :*: (ky, y):ys) -> case create (s `shiftR` 1) ys of
-                        (l :*: zs) -> y `seq` (link ky y l r :*: zs)
+-- See Note [fromDistinctAscList implementation] in Data.Set.Internal.
+fromDistinctDescList :: [(k,a)] -> Map k a
+fromDistinctDescList = fromDistinctDescList_linkAll . Foldable.foldl' next (State0 Nada)
+  where
+    next :: FromDistinctMonoState k a -> (k,a) -> FromDistinctMonoState k a
+    next (State0 stk) (!kx, !x) = fromDistinctDescList_linkTop (Bin 1 kx x Tip Tip) stk
+    next (State1 r stk) (kx, x) = State0 (Push kx x r stk)
+{-# INLINE fromDistinctDescList #-}  -- INLINE for fusion

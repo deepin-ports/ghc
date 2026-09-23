@@ -1,8 +1,11 @@
-{-# LANGUAGE PatternSynonyms, TypeOperators, TypeFamilies, MultiParamTypeClasses, GADTs #-}
+{-# LANGUAGE Haskell2010 #-}
+{-# LANGUAGE PatternSynonyms, TypeOperators, TypeFamilies, GADTs #-}
 {-# LANGUAGE FunctionalDependencies #-}
 
 -- | Test operators with or without fixity declarations
 module Operators where
+
+import Data.Kind (Type)
 
 -- | Operator with no fixity
 (+-) :: a -> a -> a
@@ -47,7 +50,7 @@ infix 9 **
 class a ><> b | a -> b where
   -- Dec 2015: Added @a -> b@ functional dependency to clean up ambiguity
   -- See GHC #11264
-  type a <>< b :: *
+  type a <>< b :: Type
   data a ><< b
   (>><), (<<>) :: a -> b -> ()
 

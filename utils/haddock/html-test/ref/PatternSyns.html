@@ -10,14 +10,14 @@
      /><script src="haddock-bundle.min.js" async="async" type="text/javascript"
     ></script
     ><script type="text/x-mathjax-config"
-    >MathJax.Hub.Config({ tex2jax: { processClass: &quot;mathjax&quot;, ignoreClass: &quot;.*&quot; } });</script
+    >MathJax.Hub.Config({ tex2jax: { processClass: "mathjax", ignoreClass: ".*" } });</script
     ><script src="https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.5/MathJax.js?config=TeX-AMS-MML_HTMLorMML" type="text/javascript"
     ></script
     ></head
   ><body
   ><div id="package-header"
     ><span class="caption empty"
-      ></span
+      >&nbsp;</span
       ><ul class="links" id="page-menu"
       ><li
 	><a href="#"
@@ -36,7 +36,13 @@
 	  ><th
 	    >Safe Haskell</th
 	    ><td
-	    >Safe</td
+	    >Safe-Inferred</td
+	    ></tr
+	  ><tr
+	  ><th
+	    >Language</th
+	    ><td
+	    >Haskell2010</td
 	    ></tr
 	  ></table
 	><p class="caption"
@@ -86,21 +92,19 @@
 	      >pattern</span
 	      > <a href="#"
 	      >(:&lt;-&gt;)</a
-	      > :: x -&gt; x1 -&gt; (<a href="#" title="PatternSyns"
+	      > :: x1 -&gt; x2 -&gt; (<a href="#" title="PatternSyns"
 	      >FooType</a
-	      > x, <a href="#" title="PatternSyns"
+	      > x1, <a href="#" title="PatternSyns"
 	      >FooType</a
 	      > (<a href="#" title="PatternSyns"
 	      >FooType</a
-	      > x1))</li
+	      > x2))</li
 	    ><li class="src short"
 	    ><span class="keyword"
 	      >data</span
 	      > <a href="#"
 	      >BlubType</a
-	      > = <span class="keyword"
-	      >forall</span
-	      > x.<a href="#" title="Text.Show"
+	      > = <a href="#" title="Prelude"
 	      >Show</a
 	      > x =&gt;  <a href="#"
 	      >BlubCtor</a
@@ -110,7 +114,7 @@
 	      >pattern</span
 	      > <a href="#"
 	      >Blub</a
-	      > :: () =&gt; <a href="#" title="Text.Show"
+	      > :: () =&gt; <a href="#" title="Prelude"
 	      >Show</a
 	      > x =&gt; x -&gt; <a href="#" title="PatternSyns"
 	      >BlubType</a
@@ -118,9 +122,9 @@
 	    ><li class="src short"
 	    ><span class="keyword"
 	      >data</span
-	      > (a :: *) <a href="#"
+	      > a <a href="#"
 	      >&gt;&lt;</a
-	      > b = <a href="#"
+	      > (b :: k) = <a href="#"
 	      >Empty</a
 	      ></li
 	    ><li class="src short"
@@ -170,7 +174,7 @@
 		  >FooCtor</a
 		  > x</td
 		><td class="doc empty"
-		></td
+		>&nbsp;</td
 		></tr
 	      ></table
 	    ></div
@@ -223,13 +227,13 @@
 	    >pattern</span
 	    > <a id="v::-60--45--62-" class="def"
 	    >(:&lt;-&gt;)</a
-	    > :: x -&gt; x1 -&gt; (<a href="#" title="PatternSyns"
+	    > :: x1 -&gt; x2 -&gt; (<a href="#" title="PatternSyns"
 	    >FooType</a
-	    > x, <a href="#" title="PatternSyns"
+	    > x1, <a href="#" title="PatternSyns"
 	    >FooType</a
 	    > (<a href="#" title="PatternSyns"
 	    >FooType</a
-	    > x1)) <a href="#" class="selflink"
+	    > x2)) <a href="#" class="selflink"
 	    >#</a
 	    ></p
 	  ><div class="doc"
@@ -260,15 +264,13 @@
 	    ><table
 	    ><tr
 	      ><td class="src"
-		><span class="keyword"
-		  >forall</span
-		  > x.<a href="#" title="Text.Show"
+		><a href="#" title="Prelude"
 		  >Show</a
 		  > x =&gt;  <a id="v:BlubCtor" class="def"
 		  >BlubCtor</a
 		  > x</td
 		><td class="doc empty"
-		></td
+		>&nbsp;</td
 		></tr
 	      ></table
 	    ></div
@@ -279,7 +281,7 @@
 	    >pattern</span
 	    > <a id="v:Blub" class="def"
 	    >Blub</a
-	    > :: () =&gt; <a href="#" title="Text.Show"
+	    > :: () =&gt; <a href="#" title="Prelude"
 	    >Show</a
 	    > x =&gt; x -&gt; <a href="#" title="PatternSyns"
 	    >BlubType</a
@@ -299,9 +301,9 @@
 	><p class="src"
 	  ><span class="keyword"
 	    >data</span
-	    > (a :: *) <a id="t:-62--60-" class="def"
+	    > a <a id="t:-62--60-" class="def"
 	    >&gt;&lt;</a
-	    > b <a href="#" class="selflink"
+	    > (b :: k) <a href="#" class="selflink"
 	    >#</a
 	    ></p
 	  ><div class="doc"
@@ -322,7 +324,7 @@
 		  >Empty</a
 		  ></td
 		><td class="doc empty"
-		></td
+		>&nbsp;</td
 		></tr
 	      ></table
 	    ></div
@@ -368,8 +370,6 @@
 	  ></div
 	></div
       ></div
-    ><div id="footer"
-    ></div
     ></body
   ></html
 >

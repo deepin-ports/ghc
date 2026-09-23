@@ -8,7 +8,7 @@
  *
  * ---------------------------------------------------------------------------*/
 
-#include "PosixSource.h"
+#include "rts/PosixSource.h"
 #include "Rts.h"
 
 #include "RtsUtils.h"
@@ -46,8 +46,8 @@ W_ mpc_misses = 0;
       that was committed, after the given one
 
   For both these calls, @state is an in-out parameter that points to
-  an opaque state threading the calls togheter. The calls should only
-  be used in an interation fashion. Pass NULL if @state is not
+  an opaque state threading the calls together. The calls should only
+  be used in an iteration fashion. Pass NULL if @state is not
   interesting,or pass a pointer to NULL if you don't have a state.
 
   void *getCommittedMBlocks(uint32_t n)
@@ -617,6 +617,8 @@ freeMBlocks(void *addr, uint32_t n)
 void
 freeAllMBlocks(void)
 {
+// See Note [Megablock allocator on wasm].
+#if !defined(wasm32_HOST_ARCH)
     debugTrace(DEBUG_gc, "freeing all megablocks");
 
 #if defined(USE_LARGE_ADDRESS_SPACE)
@@ -647,6 +649,7 @@ freeAllMBlocks(void)
 #endif
 
 #endif
+#endif
 }
 
 void
@@ -656,20 +659,14 @@ initMBlocks(void)
 
 #if defined(USE_LARGE_ADDRESS_SPACE)
     {
-        W_ size;
-#if defined(aarch64_HOST_ARCH)
-        size = (W_)1 << 38; // 1/4 TByte
-#else
-        size = (W_)1 << 40; // 1 TByte
-#endif
         void *startAddress = NULL;
         if (RtsFlags.GcFlags.heapBase) {
             startAddress = (void*) RtsFlags.GcFlags.heapBase;
         }
-        void *addr = osReserveHeapMemory(startAddress, &size);
+        void *addr = osReserveHeapMemory(startAddress, &RtsFlags.GcFlags.addressSpaceSize);
 
         mblock_address_space.begin = (W_)addr;
-        mblock_address_space.end = (W_)addr + size;
+        mblock_address_space.end = (W_)addr + RtsFlags.GcFlags.addressSpaceSize;
         mblock_high_watermark = (W_)addr;
     }
 #elif SIZEOF_VOID_P == 8

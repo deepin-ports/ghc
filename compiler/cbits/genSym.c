@@ -1,40 +1,29 @@
+#include <Rts.h>
 #include <assert.h>
-#include "Rts.h"
 #include "Unique.h"
+#include <ghcversion.h>
 
-static HsInt GenSymCounter = 0;
-static HsInt GenSymInc = 1;
+// These global variables have been moved into the RTS.  It allows them to be
+// shared with plugins even if two different instances of the GHC library are
+// loaded at the same time (#19940)
+//
+// The CPP is thus about the RTS version GHC is linked against, and not the
+// version of the GHC being built.
 
-#define UNIQUE_BITS (sizeof (HsInt) * 8 - UNIQUE_TAG_BITS)
-#define UNIQUE_MASK ((1ULL << UNIQUE_BITS) - 1)
-
-STATIC_INLINE void checkUniqueRange(HsInt u STG_UNUSED) {
-#if DEBUG
-    // Uh oh! We will overflow next time a unique is requested.
-    assert(u != UNIQUE_MASK);
+#if MIN_VERSION_GLASGOW_HASKELL(9,9,0,0)
+// Unique64 patch was present in 9.10 and later
+#define HAVE_UNIQUE64 1
+#elif !MIN_VERSION_GLASGOW_HASKELL(9,9,0,0) && MIN_VERSION_GLASGOW_HASKELL(9,8,4,0)
+// Unique64 patch was backported to 9.8.4
+#define HAVE_UNIQUE64 1
+#elif !MIN_VERSION_GLASGOW_HASKELL(9,7,0,0) && MIN_VERSION_GLASGOW_HASKELL(9,6,7,0)
+// Unique64 patch was backported to 9.6.7
+#define HAVE_UNIQUE64 1
 #endif
-}
 
-HsInt genSym(void) {
-#if defined(THREADED_RTS)
-    if (n_capabilities == 1) {
-        GenSymCounter = (GenSymCounter + GenSymInc) & UNIQUE_MASK;
-        checkUniqueRange(GenSymCounter);
-        return GenSymCounter;
-    } else {
-        HsInt n = atomic_inc((StgWord *)&GenSymCounter, GenSymInc)
-          & UNIQUE_MASK;
-        checkUniqueRange(n);
-        return n;
-    }
-#else
-    GenSymCounter = (GenSymCounter + GenSymInc) & UNIQUE_MASK;
-    checkUniqueRange(GenSymCounter);
-    return GenSymCounter;
+#if !defined(HAVE_UNIQUE64)
+HsWord64 ghc_unique_counter64 = 0;
 #endif
-}
-
-void initGenSym(HsInt NewGenSymCounter, HsInt NewGenSymInc) {
-  GenSymCounter = NewGenSymCounter;
-  GenSymInc = NewGenSymInc;
-}
+#if !MIN_VERSION_GLASGOW_HASKELL(9,3,0,0)
+HsInt ghc_unique_inc     = 1;
+#endif

@@ -3,9 +3,11 @@ GNUmakefile
 autom4te.cache/
 .cabal-sandbox/
 cabal.project.local
+cabal.project.local~
 cabal.sandbox.config
 config.log
 config.status
+config.sub
 configure
 dist/
 dist-install/
@@ -14,6 +16,8 @@ dist-newstyle/
 ghc.mk
 include/HsUnixConfig.h
 include/HsUnixConfig.h.in
+.stack-work/
+stack*.yaml.lock
 unix.buildinfo
 tests/.hpc.*
 tests/*.eventlog
@@ -22,3 +26,4 @@ tests/*.o
 tests/*.hi
 tests/*.normalised
 *~
+.vscode

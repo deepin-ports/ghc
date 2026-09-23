@@ -1,5 +1,5 @@
 import Test.Cabal.Prelude
 main = setupAndCabalTest $ do
-    skipUnless =<< hasCabalForGhc
+    skipIfAllCabalVersion "< 2.2"
     setup_build ["--enable-tests"]
     fails $ setup "test" []

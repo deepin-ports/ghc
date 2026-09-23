@@ -1,20 +1,24 @@
 {-# LANGUAGE GADTs, RecordWildCards, MagicHash, ScopedTypeVariables, CPP,
-    UnboxedTuples #-}
+    UnboxedTuples, LambdaCase #-}
 {-# OPTIONS_GHC -fno-warn-name-shadowing #-}
 
 -- |
 -- Execute GHCi messages.
 --
 -- For details on Remote GHCi, see Note [Remote GHCi] in
--- compiler/ghci/GHCi.hs.
+-- compiler/GHC/Runtime/Interpreter.hs.
 --
 module GHCi.Run
   ( run, redirectInterrupts
   ) where
 
 import Prelude -- See note [Why do we import Prelude here?]
+
+#if !defined(javascript_HOST_ARCH)
 import GHCi.CreateBCO
 import GHCi.InfoTable
+#endif
+
 import GHCi.FFI
 import GHCi.Message
 import GHCi.ObjLink
@@ -27,12 +31,10 @@ import Control.Concurrent
 import Control.DeepSeq
 import Control.Exception
 import Control.Monad
-import Data.Binary
-import Data.Binary.Get
 import Data.ByteString (ByteString)
 import qualified Data.ByteString.Unsafe as B
 import GHC.Exts
-import GHC.Exts.Heap
+import qualified GHC.Exts.Heap as Heap
 import GHC.Stack
 import Foreign hiding (void)
 import Foreign.C
@@ -44,20 +46,43 @@ import Unsafe.Coerce
 -- -----------------------------------------------------------------------------
 -- Implement messages
 
+foreign import ccall "revertCAFs" rts_revertCAFs  :: IO ()
+        -- Make it "safe", just in case
+
 run :: Message a -> IO a
 run m = case m of
+#if defined(javascript_HOST_ARCH)
+  LoadObj p                   -> withCString p loadJS
+  InitLinker                  -> notSupportedJS m
+  LoadDLL {}                  -> notSupportedJS m
+  LoadArchive {}              -> notSupportedJS m
+  UnloadObj {}                -> notSupportedJS m
+  AddLibrarySearchPath {}     -> notSupportedJS m
+  RemoveLibrarySearchPath {}  -> notSupportedJS m
+  MkConInfoTable {}           -> notSupportedJS m
+  ResolveObjs                 -> notSupportedJS m
+  FindSystemLibrary {}        -> notSupportedJS m
+  CreateBCOs {}               -> notSupportedJS m
+  LookupClosure str           -> lookupJSClosure str
+#else
   InitLinker -> initObjLinker RetainCAFs
-  LookupSymbol str -> fmap toRemotePtr <$> lookupSymbol str
-  LookupClosure str -> lookupClosure str
-  LoadDLL str -> loadDLL str
+  LoadDLL str -> fmap toRemotePtr <$> loadDLL str
   LoadArchive str -> loadArchive str
   LoadObj str -> loadObj str
   UnloadObj str -> unloadObj str
   AddLibrarySearchPath str -> toRemotePtr <$> addLibrarySearchPath str
   RemoveLibrarySearchPath ptr -> removeLibrarySearchPath (fromRemotePtr ptr)
+  MkConInfoTable tc ptrs nptrs tag ptrtag desc ->
+    toRemotePtr <$> mkConInfoTable tc ptrs nptrs tag ptrtag desc
   ResolveObjs -> resolveObjs
   FindSystemLibrary str -> findSystemLibrary str
-  CreateBCOs bcos -> createBCOs (concatMap (runGet get) bcos)
+  CreateBCOs bcos -> createBCOs bcos
+  LookupClosure str -> lookupClosure str
+#endif
+  RtsRevertCAFs -> rts_revertCAFs
+  LookupSymbol str -> fmap toRemotePtr <$> lookupSymbol str
+  LookupSymbolInDLL dll str ->
+    fmap toRemotePtr <$> lookupSymbolInDLL (fromRemotePtr dll) str
   FreeHValueRefs rs -> mapM_ freeRemoteRef rs
   AddSptEntry fpr r -> localRef r >>= sptAddEntry fpr
   EvalStmt opts r -> evalStmt opts r
@@ -69,15 +94,16 @@ run m = case m of
   MkCostCentres mod ccs -> mkCostCentres mod ccs
   CostCentreStackInfo ptr -> ccsToStrings (fromRemotePtr ptr)
   NewBreakArray sz -> mkRemoteRef =<< newBreakArray sz
-  EnableBreakpoint ref ix b -> do
-    arr <- localRef ref
-    _ <- if b then setBreakOn arr ix else setBreakOff arr ix
+  NewBreakModule name -> newModuleName name
+  SetupBreakpoint ref ix cnt -> do
+    arr <- localRef ref;
+    _ <- setupBreakpoint arr ix cnt
     return ()
   BreakpointStatus ref ix -> do
     arr <- localRef ref; r <- getBreak arr ix
     case r of
       Nothing -> return False
-      Just w -> return (w /= 0)
+      Just w -> return (w == 0)
   GetBreakpointVar ref ix -> do
     aps <- localRef ref
     mapM mkRemoteRef =<< getIdValFromApStack aps ix
@@ -85,14 +111,38 @@ run m = case m of
   MallocStrings bss -> mapM mkString0 bss
   PrepFFI conv args res -> toRemotePtr <$> prepForeignCall conv args res
   FreeFFI p -> freeForeignCallInfo (fromRemotePtr p)
-  MkConInfoTable ptrs nptrs tag ptrtag desc ->
-    toRemotePtr <$> mkConInfoTable ptrs nptrs tag ptrtag desc
   StartTH -> startTH
   GetClosure ref -> do
-    clos <- getClosureData =<< localRef ref
-    mapM (\(Box x) -> mkRemoteRef (HValue x)) clos
-  Seq ref -> tryEval (void $ evaluate =<< localRef ref)
-  _other -> error "GHCi.Run.run"
+    clos <- Heap.getClosureData =<< localRef ref
+    mapM (\(Heap.Box x) -> mkRemoteRef (HValue x)) clos
+  Seq ref -> doSeq ref
+  ResumeSeq ref -> resumeSeq ref
+
+  Shutdown            -> unexpectedMessage m
+  RunTH {}            -> unexpectedMessage m
+  RunModFinalizers {} -> unexpectedMessage m
+
+unexpectedMessage :: Message a -> b
+unexpectedMessage m = error ("GHCi.Run.Run: unexpected message: " ++ show m)
+
+#if defined(javascript_HOST_ARCH)
+foreign import javascript "((ptr,off) => globalThis.h$loadJS(h$decodeUtf8z(ptr,off)))" loadJS :: CString -> IO ()
+
+foreign import javascript "((ptr,off) => globalThis.h$lookupClosure(h$decodeUtf8z(ptr,off)))" lookupJSClosure# :: CString -> State# RealWorld -> (# State# RealWorld, Int# #)
+
+lookupJSClosure' :: String -> IO Int
+lookupJSClosure' str = withCString str $ \cstr -> IO (\s ->
+  case lookupJSClosure# cstr s of
+    (# s', r #) -> (# s', I# r #))
+
+lookupJSClosure :: String -> IO (Maybe HValueRef)
+lookupJSClosure str = lookupJSClosure' str >>= \case
+  0 -> pure Nothing
+  r -> pure (Just (RemoteRef (RemotePtr (fromIntegral r))))
+
+notSupportedJS :: Message a -> b
+notSupportedJS m = error ("Message not supported with the JavaScript interpreter: " ++ show m)
+#endif
 
 evalStmt :: EvalOpts -> EvalExpr HValueRef -> IO (EvalStatus [HValueRef])
 evalStmt opts expr = do
@@ -125,6 +175,37 @@ evalStringToString r str = do
   tryEval $ do
     r <- (unsafeCoerce io :: String -> IO String) str
     evaluate (force r)
+
+-- | Process the Seq message to force a value.                       #2950
+-- If during this processing a breakpoint is hit, return
+-- an EvalBreak value in the EvalStatus to the UI process,
+-- otherwise return an EvalComplete.
+-- The UI process has more and therefore also can show more
+-- information about the breakpoint than the current iserv
+-- process.
+doSeq :: RemoteRef a -> IO (EvalStatus ())
+doSeq ref = do
+    sandboxIO evalOptsSeq $ do
+      _ <- (void $ evaluate =<< localRef ref)
+      return ()
+
+-- | Process a ResumeSeq message. Continue the :force processing     #2950
+-- after a breakpoint.
+resumeSeq :: RemoteRef (ResumeContext ()) -> IO (EvalStatus ())
+resumeSeq hvref = do
+    ResumeContext{..} <- localRef hvref
+    withBreakAction evalOptsSeq resumeBreakMVar resumeStatusMVar $
+      mask_ $ do
+        putMVar resumeBreakMVar () -- this awakens the stopped thread...
+        redirectInterrupts resumeThreadId $ takeMVar resumeStatusMVar
+
+evalOptsSeq :: EvalOpts
+evalOptsSeq = EvalOpts
+              { useSandboxThread = True
+              , singleStep = False
+              , breakOnException = False
+              , breakOnError = False
+              }
 
 -- When running a computation, we redirect ^C exceptions to the running
 -- thread.  ToDo: we might want a way to continue even if the target
@@ -214,10 +295,10 @@ redirectInterrupts target wait = do
 
 measureAlloc :: IO (EvalResult a) -> IO (EvalStatus a)
 measureAlloc io = do
-  setAllocationCounter maxBound
+  setAllocationCounter 0                                 -- #16012
   a <- io
   ctr <- getAllocationCounter
-  let allocs = fromIntegral (maxBound::Int64) - fromIntegral ctr
+  let allocs = negate $ fromIntegral ctr
   return (EvalComplete allocs a)
 
 -- Exceptions can't be marshaled because they're dynamically typed, so
@@ -248,7 +329,7 @@ withBreakAction opts breakMVar statusMVar act
         -- as soon as it is hit, or in resetBreakAction below.
 
    onBreak :: BreakpointCallback
-   onBreak ix# uniq# is_exception apStack = do
+   onBreak tick_mod# tickx# info_mod# infox# is_exception apStack = do
      tid <- myThreadId
      let resume = ResumeContext
            { resumeBreakMVar = breakMVar
@@ -257,7 +338,14 @@ withBreakAction opts breakMVar statusMVar act
      resume_r <- mkRemoteRef resume
      apStack_r <- mkRemoteRef apStack
      ccs <- toRemotePtr <$> getCCSOf apStack
-     putMVar statusMVar $ EvalBreak is_exception apStack_r (I# ix#) (I# uniq#) resume_r ccs
+     breakpoint <-
+       if is_exception
+       then pure Nothing
+       else do
+         tick_mod <- peekCString (Ptr tick_mod#)
+         info_mod <- peekCString (Ptr info_mod#)
+         pure (Just (EvalBreakpoint tick_mod (I# tickx#) info_mod (I# infox#)))
+     putMVar statusMVar $ EvalBreak apStack_r breakpoint resume_r ccs
      takeMVar breakMVar
 
    resetBreakAction stablePtr = do
@@ -305,8 +393,10 @@ resetStepFlag :: IO ()
 resetStepFlag = poke stepFlag 0
 
 type BreakpointCallback
-     = Int#    -- the breakpoint index
-    -> Int#    -- the module uniq
+     = Addr#   -- pointer to the breakpoint tick module name
+    -> Int#    -- breakpoint tick index
+    -> Addr#   -- pointer to the breakpoint info module name
+    -> Int#    -- breakpoint info index
     -> Bool    -- exception?
     -> HValue  -- the AP_STACK, or exception
     -> IO ()
@@ -318,8 +408,8 @@ noBreakStablePtr :: StablePtr BreakpointCallback
 noBreakStablePtr = unsafePerformIO $ newStablePtr noBreakAction
 
 noBreakAction :: BreakpointCallback
-noBreakAction _ _ False _ = putStrLn "*** Ignoring breakpoint"
-noBreakAction _ _ True  _ = return () -- exception: just continue
+noBreakAction _ _ _ _ False _ = putStrLn "*** Ignoring breakpoint"
+noBreakAction _ _ _ _ True  _ = return () -- exception: just continue
 
 -- Malloc and copy the bytes.  We don't have any way to monitor the
 -- lifetime of this memory, so it just leaks.
@@ -352,6 +442,10 @@ foreign import ccall unsafe "mkCostCentre"
 #else
 mkCostCentres _ _ = return []
 #endif
+
+newModuleName :: String -> IO (RemotePtr BreakModule)
+newModuleName name =
+  castRemotePtr . toRemotePtr <$> newCString name
 
 getIdValFromApStack :: HValue -> Int -> IO (Maybe HValue)
 getIdValFromApStack apStack (I# stackDepth) = do

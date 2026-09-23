@@ -2,8 +2,11 @@
 #if __GLASGOW_HASKELL__ >= 702
 {-# LANGUAGE Safe #-}
 #endif
-#if __GLASGOW_HASKELL__ >= 710
+#if __GLASGOW_HASKELL__ >= 710 && __GLASGOW_HASKELL__ < 802
 {-# LANGUAGE AutoDeriveTypeable #-}
+#endif
+#if __GLASGOW_HASKELL__ >= 806
+{-# LANGUAGE QuantifiedConstraints #-}
 #endif
 -----------------------------------------------------------------------------
 -- |
@@ -46,27 +49,56 @@ module Control.Monad.Trans.Class (
     -- $example3
   ) where
 
--- | The class of monad transformers.  Instances should satisfy the
--- following laws, which state that 'lift' is a monad transformation:
+-- | The class of monad transformers.
+-- For any monad @m@, the result @t m@ should also be a monad,
+-- and 'lift' should be a monad transformation from @m@ to @t m@,
+-- i.e. it should satisfy the following laws:
 --
 -- * @'lift' . 'return' = 'return'@
 --
 -- * @'lift' (m >>= f) = 'lift' m >>= ('lift' . f)@
-
+--
+-- Since 0.6.0.0 and for GHC 8.6 and later, the requirement that @t m@
+-- be a 'Monad' is enforced by the implication constraint
+-- @forall m. 'Monad' m => 'Monad' (t m)@ enabled by the
+-- @QuantifiedConstraints@ extension.
+--
+-- === __Ambiguity error with GHC 9.0 to 9.2.2__
+-- These versions of GHC have a bug
+-- (<https://gitlab.haskell.org/ghc/ghc/-/issues/20582>)
+-- which causes constraints like
+--
+-- @
+-- (MonadTrans t, forall m. Monad m => Monad (t m)) => ...
+-- @
+--
+-- to be reported as ambiguous.  For transformers 0.6 and later, this can
+-- be fixed by removing the second constraint, which is implied by the first.
+#if __GLASGOW_HASKELL__ >= 806
+class (forall m. Monad m => Monad (t m)) => MonadTrans t where
+#else
+-- Prior to GHC 8.8 (base-4.13), the Monad class included fail.
+-- GHC 8.6 (base-4.12) has MonadFailDesugaring on by default, so there
+-- is no need for users defining monad transformers to define fail in
+-- the Monad instance of the transformed monad.
 class MonadTrans t where
+#endif
     -- | Lift a computation from the argument monad to the constructed monad.
     lift :: (Monad m) => m a -> t m a
 
 {- $conventions
-Most monad transformer modules include the special case of applying
-the transformer to 'Data.Functor.Identity.Identity'.  For example,
+All monad transformer modules except 'Control.Monad.Trans.Maybe'
+include the special case of applying the transformer
+to 'Data.Functor.Identity.Identity'.  For example,
 @'Control.Monad.Trans.State.Lazy.State' s@ is an abbreviation for
 @'Control.Monad.Trans.State.Lazy.StateT' s 'Data.Functor.Identity.Identity'@.
+As a consequence, operations defined on the monad transformer can also
+be used on this special case.
 
 Each monad transformer also comes with an operation @run@/XXX/@T@ to
 unwrap the transformer, exposing a computation of the inner monad.
-(Currently these functions are defined as field labels, but in the next
-major release they will be separate functions.)
+(Currently these functions are defined as field labels, but in a future
+major release they may be separate functions.)
 
 All of the monad transformers except 'Control.Monad.Trans.Cont.ContT'
 and 'Control.Monad.Trans.Cont.SelectT' are functors on the category
@@ -94,20 +126,27 @@ specialized lifting combinators, called @lift@/Op/
 
 {- $strict
 
-A monad is said to be /strict/ if its '>>=' operation is strict in its first
-argument.  The base monads 'Maybe', @[]@ and 'IO' are strict:
+A monad is said to be /strict/ if its '>>=' operation (and therefore also
+'>>') is strict in its first argument.  The base monads 'Maybe', @[]@
+and 'IO' are strict:
 
->>> undefined >> return 2 :: Maybe Integer
+>>> undefined >> Just 2
+*** Exception: Prelude.undefined
+>>> undefined >> [2]
+*** Exception: Prelude.undefined
+>>> undefined >> print 2
 *** Exception: Prelude.undefined
 
-However the monad 'Data.Functor.Identity.Identity' is not:
+However, the monads 'Data.Functor.Identity.Identity' and @(->) a@ are not:
 
->>> runIdentity (undefined >> return 2)
-2
+>>> undefined >> Identity 2
+Identity 2
+>>> (undefined >> (+1)) 5
+6
 
 In a strict monad you know when each action is executed, but the monad
 is not necessarily strict in the return value, or in other components
-of the monad, such as a state.  However you can use 'seq' to create
+of the monad, such as a state.  However, you can use 'seq' to create
 an action that is strict in the component you want evaluated.
 -}
 

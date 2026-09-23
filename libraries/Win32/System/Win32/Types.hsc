@@ -1,7 +1,5 @@
-#if __GLASGOW_HASKELL__ >= 701
-{-# LANGUAGE Trustworthy #-}
-#endif
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE Trustworthy #-}
 -----------------------------------------------------------------------------
 -- |
 -- Module      :  System.Win32.Types
@@ -30,13 +28,14 @@ import Data.Maybe (fromMaybe)
 import Data.Typeable (cast)
 import Data.Word (Word8, Word16, Word32, Word64)
 import Foreign.C.Error (Errno(..), errnoToIOError)
-import Foreign.C.String (newCWString, withCWStringLen)
+import Foreign.C.String (newCWString, withCWStringLen, CWString)
 import Foreign.C.String (peekCWString, peekCWStringLen, withCWString)
 import Foreign.C.Types (CChar, CUChar, CWchar, CInt(..), CIntPtr(..), CUIntPtr)
 import Foreign.ForeignPtr (ForeignPtr, newForeignPtr, newForeignPtr_)
 import Foreign.Ptr (FunPtr, Ptr, nullPtr, ptrToIntPtr)
 import Foreign.StablePtr (StablePtr, freeStablePtr, newStablePtr)
 import Foreign (allocaArray)
+import GHC.IO.Exception
 import GHC.IO.FD (FD(..))
 import GHC.IO.Handle.FD (fdToHandle)
 import GHC.IO.Handle.Types (Handle(..), Handle__(..))
@@ -57,6 +56,21 @@ import Data.Bits (Bits, bitSize)
 finiteBitSize :: (Bits a) => a -> Int
 finiteBitSize = bitSize
 #endif
+
+##if defined(__IO_MANAGER_WINIO__)
+import Control.Monad (when, liftM2)
+import Foreign.C.Types (CUIntPtr(..))
+import Foreign.Marshal.Utils (fromBool, with)
+import Foreign (peek)
+import Foreign.Ptr (ptrToWordPtr)
+import GHC.IO.SubSystem ((<!>))
+import GHC.IO.Handle.Windows
+import GHC.IO.IOMode
+import GHC.IO.Windows.Handle (fromHANDLE, Io(), NativeHandle(), ConsoleHandle(),
+                              toHANDLE, handleToMode, optimizeFileAccess)
+import qualified GHC.Event.Windows as Mgr
+import GHC.IO.Device (IODeviceType(..), devType)
+##endif
 
 #include <fcntl.h>
 #include <windows.h>
@@ -94,12 +108,12 @@ type ULONG32       = Word32
 type ULONG64       = Word64
 type SHORT         = Int16
 
-type DWORD_PTR     = Ptr DWORD32
 type INT_PTR       = Ptr CInt
 type ULONG         = Word32
 type UINT_PTR      = Word
 type LONG_PTR      = CIntPtr
 type ULONG_PTR     = CUIntPtr
+type DWORD_PTR     = ULONG_PTR
 #ifdef _WIN64
 type HALF_PTR      = Ptr INT32
 #else
@@ -166,6 +180,7 @@ type MbLPCTSTR     = Maybe LPCTSTR
 ----------------------------------------------------------------
 
 withTString    :: String -> (LPTSTR -> IO a) -> IO a
+withFilePath   :: FilePath -> (LPTSTR -> IO a) -> IO a
 withTStringLen :: String -> ((LPTSTR, Int) -> IO a) -> IO a
 peekTString    :: LPCTSTR -> IO String
 peekTStringLen :: (LPCTSTR, Int) -> IO String
@@ -174,6 +189,7 @@ newTString     :: String -> IO LPCTSTR
 -- UTF-16 version:
 type TCHAR     = CWchar
 withTString    = withCWString
+withFilePath path = useAsCWStringSafe path
 withTStringLen = withCWStringLen
 peekTString    = peekCWString
 peekTStringLen = peekCWStringLen
@@ -187,6 +203,25 @@ peekTString    = peekCString
 peekTStringLen = peekCStringLen
 newTString     = newCString
 -}
+
+-- | Wrapper around 'useAsCString', checking the encoded 'FilePath' for internal NUL codepoints as these are
+-- disallowed in Windows filepaths. See https://gitlab.haskell.org/ghc/ghc/-/issues/13660
+useAsCWStringSafe :: FilePath -> (CWString -> IO a) -> IO a
+useAsCWStringSafe path f =
+    if '\NUL' `elem` path
+    then ioError err
+    else withCWString path f
+  where
+    err =
+        IOError
+          { ioe_handle = Nothing
+          , ioe_type = InvalidArgument
+          , ioe_location = "useAsCWStringSafe"
+          , ioe_description = "Windows filepaths must not contain internal NUL codepoints."
+          , ioe_errno = Nothing
+          , ioe_filename = Just path
+          }
+
 
 ----------------------------------------------------------------
 -- Handles
@@ -224,6 +259,9 @@ nullFinalHANDLE = unsafePerformIO (newForeignPtr_ nullPtr)
 iNVALID_HANDLE_VALUE :: HANDLE
 iNVALID_HANDLE_VALUE = castUINTPtrToPtr maxBound
 
+iNVALID_SET_FILE_POINTER :: DWORD
+iNVALID_SET_FILE_POINTER = #const INVALID_SET_FILE_POINTER
+
 foreign import ccall "_open_osfhandle"
   _open_osfhandle :: CIntPtr -> CInt -> IO CInt
 
@@ -243,8 +281,62 @@ foreign import ccall "_open_osfhandle"
 -- Then although you can use @stdout2@ to write to standard output, it is not
 -- the case that @'IO.stdout' == stdout2@.
 hANDLEToHandle :: HANDLE -> IO Handle
-hANDLEToHandle handle =
-  _open_osfhandle (fromIntegral (ptrToIntPtr handle)) (#const _O_BINARY) >>= fdToHandle
+hANDLEToHandle handle = posix
+##if defined(__IO_MANAGER_WINIO__)
+     <!> native
+##endif
+  where
+##if defined(__IO_MANAGER_WINIO__)
+    native = do
+      -- Attach the handle to the I/O manager's CompletionPort.  This allows the
+      -- I/O manager to service requests for this Handle.
+      Mgr.associateHandle' handle
+      let hwnd = fromHANDLE handle :: Io NativeHandle
+      _type <- devType hwnd
+
+      -- Use the rts to enforce any file locking we may need.
+      mode <- handleToMode handle
+      let write_lock = mode /= ReadMode
+
+      case _type of
+        -- Regular files need to be locked.
+        -- See also Note [RTS File locking]
+        RegularFile -> do
+          optimizeFileAccess handle -- Set a few optimization flags on file handles.
+          (unique_dev, unique_ino) <- getUniqueFileInfo handle
+          r <- internal_lockFile
+                  (fromIntegral $ ptrToWordPtr handle) unique_dev unique_ino
+                  (fromBool write_lock)
+          when (r == -1)  $
+               ioException (IOError Nothing ResourceBusy "hANDLEToHandle"
+                                  "file is locked" Nothing Nothing)
+
+        -- I don't see a reason for blocking directories.  So unlike the FD
+        -- implementation I'll allow it.
+        _ -> return ()
+      mkHandleFromHANDLE hwnd Stream ("hwnd:" ++ show handle) mode Nothing
+
+    -- | getUniqueFileInfo assumes the C call to getUniqueFileInfo
+    -- succeeds.
+    getUniqueFileInfo :: HANDLE -> IO (Word64, Word64)
+    getUniqueFileInfo hnl = do
+      with 0 $ \devptr -> do
+        with 0 $ \inoptr -> do
+          internal_getUniqueFileInfo hnl devptr inoptr
+          liftM2 (,) (peek devptr) (peek inoptr)
+##endif
+    posix = _open_osfhandle (fromIntegral (ptrToIntPtr handle))
+                            (#const _O_BINARY) >>= fdToHandle
+
+##if defined(__IO_MANAGER_WINIO__)
+foreign import ccall unsafe "lockFile"
+  internal_lockFile :: CUIntPtr -> Word64 -> Word64 -> CInt -> IO CInt
+
+-- | Returns -1 on error. Otherwise writes two values representing
+-- the file into the given ptrs.
+foreign import ccall unsafe "get_unique_file_info_hwnd"
+  internal_getUniqueFileInfo :: HANDLE -> Ptr Word64 -> Ptr Word64 -> IO ()
+##endif
 
 foreign import ccall unsafe "_get_osfhandle"
   c_get_osfhandle :: CInt -> IO HANDLE
@@ -254,7 +346,45 @@ foreign import ccall unsafe "_get_osfhandle"
 
 -- Originally authored by Max Bolingbroke in the ansi-terminal library
 withHandleToHANDLE :: Handle -> (HANDLE -> IO a) -> IO a
-withHandleToHANDLE haskell_handle action =
+##if defined(__IO_MANAGER_WINIO__)
+withHandleToHANDLE = withHandleToHANDLEPosix <!> withHandleToHANDLENative
+##else
+withHandleToHANDLE = withHandleToHANDLEPosix
+##endif
+
+##if defined(__IO_MANAGER_WINIO__)
+withHandleToHANDLENative :: Handle -> (HANDLE -> IO a) -> IO a
+withHandleToHANDLENative haskell_handle action =
+    -- Create a stable pointer to the Handle. This prevents the garbage collector
+    -- getting to it while we are doing horrible manipulations with it, and hence
+    -- stops it being finalized (and closed).
+    withStablePtr haskell_handle $ const $ do
+        -- Grab the write handle variable from the Handle
+        let write_handle_mvar = case haskell_handle of
+                FileHandle _ handle_mvar     -> handle_mvar
+                DuplexHandle _ _ handle_mvar -> handle_mvar
+
+        -- This is "write" MVar, we could also take the "read" one
+        windows_handle <- readMVar write_handle_mvar >>= handle_ToHANDLE
+
+        -- Do what the user originally wanted
+        action windows_handle
+  where
+    -- | Turn an existing Handle into a Win32 HANDLE. This function throws an
+    -- IOError if the Handle does not reference a HANDLE
+    handle_ToHANDLE :: Handle__ -> IO HANDLE
+    handle_ToHANDLE (Handle__{haDevice = dev}) =
+        case (cast dev :: Maybe (Io NativeHandle), cast dev :: Maybe (Io ConsoleHandle)) of
+          (Just hwnd, Nothing) -> return $ toHANDLE hwnd
+          (Nothing, Just hwnd) -> return $ toHANDLE hwnd
+          _                    -> throwErr "not a known HANDLE"
+
+    throwErr msg = ioException $ IOError (Just haskell_handle)
+      InappropriateType "withHandleToHANDLENative" msg Nothing Nothing
+##endif
+
+withHandleToHANDLEPosix :: Handle -> (HANDLE -> IO a) -> IO a
+withHandleToHANDLEPosix haskell_handle action =
     -- Create a stable pointer to the Handle. This prevents the garbage collector
     -- getting to it while we are doing horrible manipulations with it, and hence
     -- stops it being finalized (and closed).
@@ -271,7 +401,6 @@ withHandleToHANDLE haskell_handle action =
 
         -- Finally, turn that (C-land) FD into a HANDLE using msvcrt
         windows_handle <- c_get_osfhandle fd
-
         -- Do what the user originally wanted
         action windows_handle
 
@@ -327,6 +456,8 @@ eRROR_MOD_NOT_FOUND = #const ERROR_MOD_NOT_FOUND
 eRROR_PROC_NOT_FOUND :: ErrCode
 eRROR_PROC_NOT_FOUND = #const ERROR_PROC_NOT_FOUND
 
+eERROR_ENVVAR_NOT_FOUND :: ErrCode
+eERROR_ENVVAR_NOT_FOUND = #const ERROR_ENVVAR_NOT_FOUND
 
 errorWin :: String -> IO a
 errorWin fn_name = do

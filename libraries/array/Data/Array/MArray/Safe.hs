@@ -29,10 +29,19 @@ module Data.Array.MArray.Safe (
     newArray,     -- :: (MArray a e m, Ix i) => (i,i) -> e -> m (a i e)
     newArray_,    -- :: (MArray a e m, Ix i) => (i,i) -> m (a i e)
     newListArray, -- :: (MArray a e m, Ix i) => (i,i) -> [e] -> m (a i e)
+    newGenArray,  -- :: (MArray a e m, Ix i) => (i,i) -> (i -> m e) -> m (a i e)
 
     -- * Reading and writing mutable arrays
     readArray,    -- :: (MArray a e m, Ix i) => a i e -> i -> m e
     writeArray,   -- :: (MArray a e m, Ix i) => a i e -> i -> e -> m ()
+
+    -- * Array folds
+    foldlMArray',
+    foldrMArray',
+    mapMArrayM_,
+    forMArrayM_,
+    foldlMArrayM',
+    foldrMArrayM',
 
     -- * Derived arrays
     mapArray,     -- :: (MArray a e' m, MArray a e m, Ix i) => (e' -> e) -> a i e' -> m (a i e)

@@ -12,7 +12,7 @@ defines the ``Seq`` data type.
 Short Example
 -------------
 
-The following GHCi session shows some of the basic sequence funcitonality::
+The following GHCi session shows some of the basic sequence functionality::
 
     -- Import the Seq type and operators for combining sequences unqualified.
     -- Import the rest of the Sequence module qualified.
@@ -70,7 +70,7 @@ The following GHCi session shows some of the basic sequence funcitonality::
     > 3
 
 .. TIP:: You can use the `OverloadedLists
-	 <http://downloads.haskell.org/~ghc/latest/docs/html/users_guide/glasgow_exts.html#overloaded-lists>`_
+	 <https://downloads.haskell.org/ghc/latest/docs/users_guide/exts/overloaded_lists.html>`_
 	 extension so you don't need to write ``fromList [1, 2, 3]`` everywhere.
 	 Instead you can just write ``[1, 2, 3]`` and if the function is
 	 expecting a sequence it will be converted automatically! The code here
@@ -236,13 +236,15 @@ Let's do the same thing with sequences!
 
     -- Imports the patterns to match on.
     import Data.Sequence (Seq (Empty, (:<|), (:|>)))
+    import qualified Data.Sequence as Seq
 
     case Seq.fromList [1, 2, 3] of
       Empty -> "empty sequence"
-      x :<| xs -> "first:" ++ x ++ " rest:" ++ show xs
+      x :<| xs -> "first:" ++ show x ++ " rest:" ++ show xs
     > "first:1 rest:fromList [2,3]"
 
-.. NOTE:: You can't copy/paste this into GHCi because it's multiple lines.
+.. NOTE:: You can copy/paste this into GHCi using the syntax for multi-line input ``:{ ... :}`` or by enabling `multiline mode
+          <https://downloads.haskell.org/~ghc/latest/docs/html/users_guide/ghci.html#multiline-input>`_ ``:set +m``.
 
 You can also take an element off the end::
 

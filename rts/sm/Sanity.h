@@ -31,6 +31,7 @@ void checkStaticObjects ( StgClosure* static_objects );
 void checkStackChunk    ( StgPtr sp, StgPtr stack_end );
 StgOffset checkStackFrame ( StgPtr sp );
 StgOffset checkClosure  ( const StgClosure* p );
+void checkNonmovingHeap ( const struct NonmovingHeap *heap );
 
 void checkRunQueue      (Capability *cap);
 
@@ -38,6 +39,7 @@ void memInventory (bool show);
 
 void checkBQ (StgTSO *bqe, StgClosure *closure);
 
+void checkSTACK (StgStack *stack);
 #include "EndPrivate.h"
 
 #endif /* DEBUG */

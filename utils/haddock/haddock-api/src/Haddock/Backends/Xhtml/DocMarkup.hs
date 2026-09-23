@@ -19,7 +19,7 @@ module Haddock.Backends.Xhtml.DocMarkup (
   docElement, docSection, docSection_,
 ) where
 
-import Data.List
+import Data.List (intersperse)
 import Documentation.Haddock.Markup
 import Haddock.Backends.Xhtml.Names
 import Haddock.Backends.Xhtml.Utils
@@ -31,8 +31,8 @@ import Haddock.Doc (combineDocumentation, emptyMetaDoc,
 import Text.XHtml hiding ( name, p, quote )
 import Data.Maybe (fromMaybe)
 
-import GHC
-import Name
+import GHC hiding (anchor)
+import GHC.Types.Name
 
 
 parHtmlMarkup :: Qualification -> Bool
@@ -44,19 +44,20 @@ parHtmlMarkup qual insertAnchors ppId = Markup {
   markupAppend               = (+++),
   markupIdentifier           = thecode . ppId insertAnchors,
   markupIdentifierUnchecked  = thecode . ppUncheckedLink qual,
-  markupModule               = \m -> let (mdl,ref) = break (=='#') m
-                                         -- Accomodate for old style
-                                         -- foo\#bar anchors
-                                         mdl' = case reverse mdl of
-                                           '\\':_ -> init mdl
-                                           _ -> mdl
-                                     in ppModuleRef (mkModuleName mdl') ref,
+  markupModule               = \(ModLink m lbl) ->
+                                 let (mdl,ref) = break (=='#') m
+                                       -- Accommodate for old style
+                                       -- foo\#bar anchors
+                                     mdl' = case reverse mdl of
+                                              '\\':_ -> init mdl
+                                              _ -> mdl
+                                 in ppModuleRef lbl (mkModuleName mdl') ref,
   markupWarning              = thediv ! [theclass "warning"],
   markupEmphasis             = emphasize,
   markupBold                 = strong,
   markupMonospaced           = thecode,
   markupUnorderedList        = unordList,
-  markupOrderedList          = ordList,
+  markupOrderedList          = makeOrdList,
   markupDefList              = defList,
   markupCodeBlock            = pre,
   markupHyperlink            = \(Hyperlink url mLabel)
@@ -111,9 +112,12 @@ parHtmlMarkup qual insertAnchors ppId = Markup {
         htmlPrompt = (thecode . toHtml $ ">>> ") ! [theclass "prompt"]
         htmlExpression = (strong . thecode . toHtml $ expression ++ "\n") ! [theclass "userinput"]
 
+    makeOrdList :: HTML a => [(Int, a)] -> Html
+    makeOrdList items = olist << map (\(index, a) -> li ! [intAttr "value" index] << a) items
+
 -- | We use this intermediate type to transform the input 'Doc' tree
 -- in an arbitrary way before rendering, such as grouping some
--- elements. This is effectivelly a hack to prevent the 'Doc' type
+-- elements. This is effectively a hack to prevent the 'Doc' type
 -- from changing if it is possible to recover the layout information
 -- we won't need after the fact.
 data Hack a id =
@@ -182,7 +186,7 @@ hackMarkup fmt' currPkg h' =
       UntouchedDoc d -> (markup fmt $ _doc d, [_meta d])
       CollapsingHeader (Header lvl titl) par n nm ->
         let id_ = makeAnchorId $ "ch:" ++ fromMaybe "noid:" nm ++ show n
-            col' = collapseControl id_ "caption"
+            col' = collapseControl id_ "subheading"
             summary = thesummary ! [ theclass "hide-when-js-enabled" ] << "Expand"
             instTable contents = collapseDetails id_ DetailsClosed (summary +++ contents)
             lvs = zip [1 .. ] [h1, h2, h3, h4, h5, h6]
@@ -194,14 +198,17 @@ hackMarkup fmt' currPkg h' =
                          in (markupAppend fmt x y, m ++ m')
 
 renderMeta :: DocMarkup id Html -> Maybe Package -> Meta -> Html
-renderMeta fmt currPkg (Meta { _version = Just x, _package = pkg }) =
+renderMeta fmt currPkg m =
+  maybe noHtml (renderMetaSince fmt currPkg) (_metaSince m)
+
+renderMetaSince :: DocMarkup id Html -> Maybe Package -> MetaSince -> Html
+renderMetaSince fmt currPkg (MetaSince { sincePackage = pkg, sinceVersion = ver }) =
   markupParagraph fmt . markupEmphasis fmt . toHtml $
-    "Since: " ++ formatPkgMaybe pkg ++ formatVersion x
+    "Since: " ++ formatPkgMaybe pkg ++ formatVersion ver
   where
     formatVersion v = concat . intersperse "." $ map show v
     formatPkgMaybe (Just p) | Just p /= currPkg = p ++ "-"
     formatPkgMaybe _ = ""
-renderMeta _ _ _ = noHtml
 
 -- | Goes through 'hackMarkup' to generate the 'Html' rather than
 -- skipping straight to 'markup': this allows us to employ XHtml
@@ -276,5 +283,5 @@ cleanup = overDoc (markup fmtUnParagraphLists)
     fmtUnParagraphLists :: DocMarkup (Wrap a) (Doc a)
     fmtUnParagraphLists = idMarkup {
       markupUnorderedList = DocUnorderedList . map unParagraph,
-      markupOrderedList   = DocOrderedList   . map unParagraph
+      markupOrderedList   = DocOrderedList   . map (\(index, a) -> (index, unParagraph a))
       }

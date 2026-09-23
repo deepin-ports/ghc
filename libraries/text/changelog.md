@@ -1,3 +1,167 @@
+### 2.1.3 - 2025-08-01
+
+* [Fix CRLF handling in IO functions](https://github.com/haskell/text/pull/649)
+
+* [Change `utf8LengthByLeader` to a branching implementation](https://github.com/haskell/text/pull/635)
+
+* [Define `stimes 0` for lazy text](https://github.com/haskell/text/pull/641)
+
+* [Add implementation of `sconcat` and `stimes` for strict `Text`](https://github.com/haskell/text/pull/580) and [Fix `stimes` for strict text when size wraps around `Int`](https://github.com/haskell/text/pull/639)
+
+* [Allow list fusion for `unpack` over both strict and lazy `Text`](https://github.com/haskell/text/pull/629)
+
+### 2.1.2
+
+* [Update case mappings for Unicode 16.0](https://github.com/haskell/text/pull/618)
+
+* [Add type synonym for lazy builders. Deprecated `StrictBuilder` for `StrictTextBuilder`](https://github.com/haskell/text/pull/581)
+
+* [Add `initsNE` and `tailsNE`](https://github.com/haskell/text/pull/558)
+
+* [Add `foldlM'`](https://github.com/haskell/text/pull/543)
+
+* [Add `Data.Text.Foreign.peekCString`](https://github.com/haskell/text/pull/599)
+
+* [Add `Data.Text.show` and `Data.Text.Lazy.show`](https://github.com/haskell/text/pull/608)
+
+* [Add pattern synonyms `Empty`, `(:<)`, and `(:>)`](https://github.com/haskell/text/pull/619)
+
+* [Improve precision of `Data.Text.Read.rational`](https://github.com/haskell/text/pull/565)
+
+* [`Data.Text.IO.Utf8`: use `B.putStrLn` instead of `B.putStr t >> B.putStr "\n"`](https://github.com/haskell/text/pull/579)
+
+* [`Data.Text.IO` and `Data.Text.Lazy.IO`: Make `putStrLn` more atomic with line or block buffering](https://github.com/haskell/text/pull/600)
+
+* [Integrate UTF-8 `hPutStr` to standard `hPutStr`](https://github.com/haskell/text/pull/589)
+
+* [Serialise `Text` without going through `ByteString`](https://github.com/haskell/text/pull/617)
+
+* [Make `splitAt` strict in its first argument, even if input is empty](https://github.com/haskell/text/pull/575)
+
+* [Improve lazy performance of `Data.Text.Lazy.inits`](https://github.com/haskell/text/pull/572)
+
+* [Implement `Data.Text.unpack` and `Data.Text.toTitle` directly, without streaming](https://github.com/haskell/text/pull/611)
+
+* [Make `fromString` `INLINEABLE` instead of `INLINE`](https://github.com/haskell/text/pull/571) to reduce the size of generated code.
+
+### 2.1.1
+
+* Add pure Haskell implementations as an alternative to C-based ones,
+  suitable for JavaScript backend.
+
+* [Add type synonyms for lazy and strict text flavours](https://github.com/haskell/text/pull/547)
+
+* [Share empty `Text` values](https://github.com/haskell/text/pull/493)
+
+* [Fix bug in `isValidUtf8ByteArray`](https://github.com/haskell/text/pull/553)
+
+* [Optimize the implementation of `Data.Text.concat`](https://github.com/haskell/text/pull/551)
+
+* [Fix `filter/filter` rules for `Text` and lazy `Text`](https://github.com/haskell/text/pull/560)
+
+### 2.1
+
+* [Switch `Data.Text.Array` to `Data.Array.Byte`](https://github.com/haskell/text/pull/474)
+
+* [Add `Text.IO.Utf8` module](https://github.com/haskell/text/pull/503)
+
+* [Expose UTF-8 validation functions from internal module](https://github.com/haskell/text/pull/483)
+
+* [Fix handling of incomplete input in stream decoders](https://github.com/haskell/text/pull/527)
+
+* [Fix handling of invalid bytes in stream decoders](https://github.com/haskell/text/pull/528)
+
+* [Make Lift Text work under RebindableSyntax](https://github.com/haskell/text/pull/534)
+
+### 2.0.2
+
+* [Add decoding functions in `Data.Text.Encoding` that allow
+  more control for error handling and for how to allocate text](https://github.com/haskell/text/pull/448). Thanks to David Sledge!
+  * `decodeASCIIPrefix`
+  * `decodeUtf8Chunk`
+  * `decodeUtf8More`
+  * `Utf8ValidState`
+  * `startUtf8ValidState`
+  * `StrictBuilder`
+  * `strictBuilderToText`
+  * `textToStrictBuilder`
+  * `validateUtf8Chunk`
+  * `validateUtf8More`
+
+* [Fix quadratic slowdown when decoding invalid UTF-8 bytestrings](https://github.com/haskell/text/issues/495)
+
+* [Add `isAscii :: Text -> Bool`](https://github.com/haskell/text/issues/497)
+
+* [Add `decodeASCII' :: ByteString -> Maybe Text`](https://github.com/haskell/text/issues/499)
+
+* Add internal module `Data.Text.Internal.StrictBuilder`
+
+* Add internal module `Data.Text.Internal.Encoding`
+
+* Add `Data.Text.Internal.Encoding.Utf8.updateDecoderState` and export `utf8{Accept,Reject}State` from the same module.
+
+* [Speed up case conversions](https://github.com/haskell/text/pull/460)
+
+* [Reduce code bloat for literal strings](https://github.com/haskell/text/pull/468)
+
+* [Remove support for GHC 8.0](https://github.com/haskell/text/pull/485)
+
+### 2.0.1
+
+* Improve portability of C and C++ code.
+* [Make `Lift` instance more efficient](https://github.com/haskell/text/pull/413)
+* [Make `toCaseFold` idempotent](https://github.com/haskell/text/pull/402)
+* [Add `fromPtr0`](https://github.com/haskell/text/pull/423)
+* [Add `Data.Text.foldr'`](https://github.com/haskell/text/pull/436)
+* [Add `withCString`](https://github.com/haskell/text/pull/431)
+* [Add `spanM` and `spanEndM`](https://github.com/haskell/text/pull/437)
+
+### 2.0
+
+* [Switch internal representation of text from UTF-16 to UTF-8](https://github.com/haskell/text/pull/365):
+  * Functions in `Data.Text.Array` now operate over arrays of `Word8` instead of `Word16`.
+  * Rename constructors of `Array` and `MArray` to `ByteArray` and `MutableByteArray`.
+  * Rename functions and types in `Data.Text.Foreign` to reflect switch
+    from `Word16` to `Word8`.
+  * Rename slicing functions in `Data.Text.Unsafe` to reflect switch
+    from `Word16` to `Word8`.
+  * Rename `Data.Text.Internal.Unsafe.Char.unsafeChr` to `unsafeChr16`.
+  * Change semantics and order of arguments of `Data.Text.Array.copyI`:
+    pass length, not end offset.
+  * Extend `Data.Text.Internal.Encoding.Utf8` to provide more UTF-8 related routines.
+  * Extend interface of `Data.Text.Array` with more utility functions.
+  * Add `instance Show Data.Text.Unsafe.Iter`.
+  * Add `Data.Text.measureOff`.
+  * Extend `Data.Text.Unsafe` with `iterArray` and `reverseIterArray`.
+  * Export `Data.Text.Internal.Lazy.equal`.
+  * Export `Data.Text.Internal.append`.
+  * Add `Data.Text.Internal.Private.spanAscii_`.
+  * Replacement characters in `decodeUtf8With` are no longer limited to Basic Multilingual Plane.
+* [Disable implicit fusion rules](https://github.com/haskell/text/pull/348)
+* [Add `Data.Text.Encoding.decodeUtf8Lenient`](https://github.com/haskell/text/pull/342)
+* [Remove `Data.Text.Internal.Unsafe.Shift`](https://github.com/haskell/text/pull/343)
+* [Remove `Data.Text.Internal.Functions`](https://github.com/haskell/text/pull/354)
+* [Bring type of `Data.Text.Unsafe.reverseIter` in line with `iter`](https://github.com/haskell/text/pull/355)
+* [Add `instance Bounded FPFormat`](https://github.com/haskell/text/pull/355)
+* [Add HasCallStack to partial functions](https://github.com/haskell/text/pull/388)
+
+### 1.2.5.0
+
+* [Support sized primitives from GHC 9.2](https://github.com/haskell/text/pull/305)
+* [Allow `template-haskell-2.18.0.0`](https://github.com/haskell/text/pull/320)
+* [Add `elem :: Char -> Text -> Bool` to `Data.Text` and `Data.Text.Lazy`](https://github.com/haskell/text/pull/274)
+* [Replace surrogate code points in `Data.Text.Internal.Builder.{singleton,fromString}`](https://github.com/haskell/text/pull/281)
+* [Use `unsafeWithForeignPtr` when available](https://github.com/haskell/text/pull/325)
+* [Use vectorized CPU instructions for decoding and encoding](https://github.com/haskell/text/pull/302)
+* [Regenerate case mapping in accordance to Unicode 13.0](https://github.com/haskell/text/pull/334)
+* [Fix UTF-8 decoding of lazy bytestrings](https://github.com/haskell/text/pull/333)
+
+### 1.2.4.1
+
+* Support `template-haskell-2.17.0.0`
+* Support `bytestring-0.11`
+* Add `take . drop` related RULE
+
 ### 1.2.4.0
 
 * Add TH `Lift` instances for `Data.Text.Text` and `Data.Text.Lazy.Text` (gh-232)
@@ -5,7 +169,9 @@
 * Update Haddock documentation to better reflect fusion eligibility; improve fusion
   rules for `takeWhileEnd` and `length` (gh-241, ghc-202)
 
-* Optimise `Data.Text.replicate` from `O(n)` to `O(log n)` (gh-209)
+* Optimise `Data.Text.replicate`. Rather than calling `memcpy` `n` times,
+  call it only `O(log n)` times on chunks of increasing size. The total
+  asymptotic complexity remains `O(nm)`. (gh-209)
 
 * Support `base-4.13.0.0`
 
@@ -215,7 +381,7 @@
 * New function toTitle converts words in a string to title case
 
 * New functions peekCStringLen and withCStringLen simplify
-  interoperability with C functionns
+  interoperability with C functions
 
 * Added support for decoding UTF-8 in stream-friendly fashion
 

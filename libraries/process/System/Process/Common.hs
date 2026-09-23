@@ -19,26 +19,41 @@ module System.Process.Common
     , mbFd
     , mbPipe
     , pfdToHandle
+    , rawFdToHandle
 
 -- Avoid a warning on Windows
-#ifdef WINDOWS
+#if defined(mingw32_HOST_OS)
     , CGid (..)
 #else
     , CGid
+#endif
+
+#if defined(mingw32_HOST_OS)
+    , HANDLE
+-- WINIO is only available on GHC 9.0 and up.
+#  if defined(__IO_MANAGER_WINIO__)
+    , mbHANDLE
+    , mbPipeHANDLE
+    , rawHANDLEToHandle
+#  endif
 #endif
     ) where
 
 import Control.Concurrent
 import Control.Exception
-import Data.String
+import Data.String ( IsString(..) )
 import Foreign.Ptr
-import Foreign.Storable
+import Foreign.Storable ( Storable(peek) )
 
 import System.Posix.Internals
 import GHC.IO.Exception
 import GHC.IO.Encoding
 import qualified GHC.IO.FD as FD
 import GHC.IO.Device
+#if defined(__IO_MANAGER_WINIO__)
+import GHC.IO.Handle.Windows
+import GHC.IO.Windows.Handle (fromHANDLE, Io(), NativeHandle())
+#endif
 import GHC.IO.Handle.FD
 import GHC.IO.Handle.Internals
 import GHC.IO.Handle.Types hiding (ClosedHandle)
@@ -46,16 +61,25 @@ import System.IO.Error
 import Data.Typeable
 import System.IO (IOMode)
 
+#if defined(javascript_HOST_ARCH)
+import GHC.JS.Prim (JSVal)
+#endif
+
 -- We do a minimal amount of CPP here to provide uniform data types across
 -- Windows and POSIX.
-#ifdef WINDOWS
+#if defined(mingw32_HOST_OS)
 import Data.Word (Word32)
 import System.Win32.DebugApi (PHANDLE)
+#if defined(__IO_MANAGER_WINIO__)
+import System.Win32.Types (HANDLE)
+#endif
 #else
 import System.Posix.Types
 #endif
 
-#ifdef WINDOWS
+#if defined(javascript_HOST_ARCH)
+type PHANDLE = JSVal
+#elif defined(mingw32_HOST_OS)
 -- Define some missing types for Windows compatibility. Note that these values
 -- will never actually be used, as the setuid/setgid system calls are not
 -- applicable on Windows. No value of this type will ever exist.
@@ -66,7 +90,6 @@ type UserID = CGid
 #else
 type PHANDLE = CPid
 #endif
-
 data CreateProcess = CreateProcess{
   cmdspec      :: CmdSpec,                 -- ^ Executable & arguments, or shell command.  If 'cwd' is 'Nothing', relative paths are resolved with respect to the current working directory.  If 'cwd' is provided, it is implementation-dependent whether relative paths are resolved with respect to 'cwd' or the current working directory, so absolute paths should be used to ensure portability.
   cwd          :: Maybe FilePath,          -- ^ Optional path to the working directory for the new process
@@ -74,11 +97,10 @@ data CreateProcess = CreateProcess{
   std_in       :: StdStream,               -- ^ How to determine stdin
   std_out      :: StdStream,               -- ^ How to determine stdout
   std_err      :: StdStream,               -- ^ How to determine stderr
-  close_fds    :: Bool,                    -- ^ Close all file descriptors except stdin, stdout and stderr in the new process (on Windows, only works if std_in, std_out, and std_err are all Inherit). This implementation will call close an every fd from 3 to the maximum of open files, which can be slow for high maximum of open files.
-  create_group :: Bool,                    -- ^ Create a new process group
+  -- XXX verify what happens with fds in nodejs child processes
+  close_fds    :: Bool,                    -- ^ Close all file descriptors except stdin, stdout and stderr in the new process (on Windows, only works if std_in, std_out, and std_err are all Inherit). This implementation will call close on every fd from 3 to the maximum of open files, which can be slow for high maximum of open files.
+  create_group :: Bool,                    -- ^ Create a new process group. On JavaScript this also creates a new session.
   delegate_ctlc:: Bool,                    -- ^ Delegate control-C handling. Use this for interactive console processes to let them handle control-C themselves (see below for details).
-                                           --
-                                           --   On Windows this has no effect.
                                            --
                                            --   @since 1.2.0.0
   detach_console :: Bool,                  -- ^ Use the windows DETACHED_PROCESS flag when creating the process; does nothing on other platforms.
@@ -89,15 +111,15 @@ data CreateProcess = CreateProcess{
                                            --   Default: @False@
                                            --
                                            --   @since 1.3.0.0
-  new_session :: Bool,                     -- ^ Use posix setsid to start the new process in a new session; does nothing on other platforms.
+  new_session :: Bool,                     -- ^ Use posix setsid to start the new process in a new session; starts process in a new session on JavaScript; does nothing on other platforms.
                                            --
                                            --   @since 1.3.0.0
-  child_group :: Maybe GroupID,            -- ^ Use posix setgid to set child process's group id; does nothing on other platforms.
+  child_group :: Maybe GroupID,            -- ^ Use posix setgid to set child process's group id; works for JavaScript when system running nodejs is posix. does nothing on other platforms.
                                            --
                                            --   Default: @Nothing@
                                            --
                                            --   @since 1.4.0.0
-  child_user :: Maybe UserID,              -- ^ Use posix setuid to set child process's user id; does nothing on other platforms.
+  child_user :: Maybe UserID,              -- ^ Use posix setuid to set child process's user id; works for JavaScript when system running nodejs is posix. does nothing on other platforms.
                                            --
                                            --   Default: @Nothing@
                                            --
@@ -143,6 +165,14 @@ data CmdSpec
       --   see the
       --   <http://msdn.microsoft.com/en-us/library/windows/desktop/aa365527%28v=vs.85%29.aspx documentation>
       --   for the Windows @SearchPath@ API.
+      --
+      --   Windows does not have a mechanism for passing multiple arguments.
+      --   When using @RawCommand@ on Windows, the command line is serialised
+      --   into a string, with arguments quoted separately.  Command line
+      --   parsing is up individual programs, so the default behaviour may
+      --   not work for some programs.  If you are not getting the desired
+      --   results, construct the command line yourself and use 'ShellCommand'.
+      --
   deriving (Show, Eq)
 
 
@@ -175,6 +205,18 @@ data StdStream
 -- ----------------------------------------------------------------------------
 -- ProcessHandle type
 
+data ProcessHandle__ = OpenHandle { phdlProcessHandle :: PHANDLE }
+                     -- | 'OpenExtHandle' is only applicable for
+                     -- Windows platform. It represents [Job
+                     -- Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects).
+                     | OpenExtHandle { phdlProcessHandle :: PHANDLE
+                                     -- ^ the process
+                                     , phdlJobHandle     :: PHANDLE
+                                     -- ^ the job containing the process and
+                                     -- its subprocesses
+                                     }
+                     | ClosedHandle ExitCode
+
 {- | A handle to a process, which can be used to wait for termination
      of the process using 'System.Process.waitForProcess'.
 
@@ -186,14 +228,6 @@ data StdStream
      completion. This requires two handles. A process job handle and
      a events handle to monitor.
 -}
-data ProcessHandle__ = OpenHandle { phdlProcessHandle :: PHANDLE }
-                     | OpenExtHandle { phdlProcessHandle :: PHANDLE
-                                     -- ^ the process
-                                     , phdlJobHandle     :: PHANDLE
-                                     -- ^ the job containing the process and
-                                     -- its subprocesses
-                                     }
-                     | ClosedHandle ExitCode
 data ProcessHandle
   = ProcessHandle { phandle          :: !(MVar ProcessHandle__)
                   , mb_delegate_ctlc :: !Bool
@@ -227,12 +261,17 @@ mbFd _   _std CreatePipe      = return (-1)
 mbFd _fun std Inherit         = return std
 mbFd _fn _std NoStream        = return (-2)
 mbFd fun _std (UseHandle hdl) =
-  withHandle fun hdl $ \Handle__{haDevice=dev,..} ->
+  withHandle fun hdl $ \Handle__{haDevice=dev,..} -> do
     case cast dev of
       Just fd -> do
+#if !defined(javascript_HOST_ARCH)
          -- clear the O_NONBLOCK flag on this FD, if it is set, since
          -- we're exposing it externally (see #3316)
          fd' <- FD.setNonBlockingMode fd False
+#else
+         -- on the JavaScript platform we cannot change the FD flags
+         fd' <- pure fd
+#endif
          return (Handle__{haDevice=fd',..}, FD.fdFD fd')
       Nothing ->
           ioError (mkIOError illegalOperationErrorType
@@ -244,8 +283,11 @@ mbPipe CreatePipe pfd  mode = fmap Just (pfdToHandle pfd mode)
 mbPipe _std      _pfd _mode = return Nothing
 
 pfdToHandle :: Ptr FD -> IOMode -> IO Handle
-pfdToHandle pfd mode = do
-  fd <- peek pfd
+pfdToHandle pfd mode =
+  ( \ fd -> rawFdToHandle fd mode ) =<< peek pfd
+
+rawFdToHandle :: FD -> IOMode -> IO Handle
+rawFdToHandle fd mode = do
   let filepath = "fd:" ++ show fd
   (fD,fd_type) <- FD.mkFD (fromIntegral fd) mode
                        (Just (Stream,0,0)) -- avoid calling fstat()
@@ -258,3 +300,34 @@ pfdToHandle pfd mode = do
   let enc = localeEncoding
 #endif
   mkHandleFromFD fD' fd_type filepath mode False {-is_socket-} (Just enc)
+
+
+#if defined(mingw32_HOST_OS) && !defined(__IO_MANAGER_WINIO__)
+type HANDLE = Ptr ()
+#endif
+
+#if defined(__IO_MANAGER_WINIO__)
+-- It is not completely safe to pass the values -1 and -2 as HANDLE as it's an
+-- unsigned type. -1 additionally is also the value for INVALID_HANDLE.  However
+-- it should be safe in this case since an invalid handle would be an error here
+-- anyway and the chances of us getting a handle with a value of -2 is
+-- astronomical. However, sometime in the future process should really use a
+-- proper structure here.
+mbHANDLE :: HANDLE -> StdStream -> IO HANDLE
+mbHANDLE _std CreatePipe      = return $ intPtrToPtr (-1)
+mbHANDLE  std Inherit         = return std
+mbHANDLE _std NoStream        = return $ intPtrToPtr (-2)
+mbHANDLE _std (UseHandle hdl) = handleToHANDLE hdl
+
+mbPipeHANDLE :: StdStream -> Ptr HANDLE -> IOMode -> IO (Maybe Handle)
+mbPipeHANDLE CreatePipe pfd mode =
+  Just <$> ( ( \ hANDLE -> rawHANDLEToHandle hANDLE mode ) =<< peek pfd )
+mbPipeHANDLE _std      _pfd _mode = return Nothing
+
+rawHANDLEToHandle :: HANDLE -> IOMode-> IO Handle
+rawHANDLEToHandle raw_handle mode  = do
+  let hwnd  = fromHANDLE raw_handle :: Io NativeHandle
+      ident = "hwnd:" ++ show raw_handle
+  enc <- getLocaleEncoding
+  mkHandleFromHANDLE hwnd Stream ident mode (Just enc)
+#endif

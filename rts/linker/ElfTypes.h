@@ -1,4 +1,4 @@
-#ifndef ElfTypes_h
+#if !defined(ElfTypes_h)
 #define ElfTypes_h
 
 #if defined(OBJFORMAT_ELF)
@@ -6,6 +6,7 @@
 #include "ghcplatform.h"
 
 #include <elf.h>
+#include "linker/InitFini.h"
 
 /*
  * Define a set of types which can be used for both ELF32 and ELF64
@@ -32,6 +33,9 @@
 #define Elf_Sym     Elf64_Sym
 #define Elf_Rel     Elf64_Rel
 #define Elf_Rela    Elf64_Rela
+#if !defined(ELF_ST_VISIBILITY)
+#define ELF_ST_VISIBILITY ELF64_ST_VISIBILITY
+#endif
 #if !defined(ELF_ST_TYPE)
 #define ELF_ST_TYPE ELF64_ST_TYPE
 #endif
@@ -56,6 +60,9 @@
 #define Elf_Sym     Elf32_Sym
 #define Elf_Rel     Elf32_Rel
 #define Elf_Rela    Elf32_Rela
+#if !defined(ELF_ST_VISIBILITY)
+#define ELF_ST_VISIBILITY ELF32_ST_VISIBILITY
+#endif /* ELF_ST_VISIBILITY */
 #if !defined(ELF_ST_TYPE)
 #define ELF_ST_TYPE ELF32_ST_TYPE
 #endif /* ELF_ST_TYPE */
@@ -137,6 +144,8 @@ struct ObjectCodeFormatInfo {
     ElfRelocationTable   *relTable;
     ElfRelocationATable  *relaTable;
 
+    struct InitFiniList* init; // Freed by ocRunInit_PEi386
+    struct InitFiniList* fini; // Freed by ocRunFini_PEi386
 
     /* pointer to the global offset table */
     void *                got_start;
@@ -164,7 +173,7 @@ struct SectionFormatInfo {
     size_t nstubs;
     Stub * stubs;
 
-    char * name;
+    const char * name;
 
     Elf_Shdr *sectionHeader;
 };

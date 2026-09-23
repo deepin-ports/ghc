@@ -5,7 +5,7 @@ module Main where
 import Control.Applicative (Const(Const, getConst), pure)
 import Control.DeepSeq (rnf)
 import Control.Exception (evaluate)
-import Gauge (bench, defaultMain, whnf, nf)
+import Test.Tasty.Bench (bench, defaultMain, whnf, nf)
 import Data.Functor.Identity (Identity(..))
 import Data.List (foldl')
 import qualified Data.Map as M
@@ -13,9 +13,7 @@ import qualified Data.Map.Strict as MS
 import Data.Map (alterF)
 import Data.Maybe (fromMaybe)
 import Data.Functor ((<$))
-#if __GLASGOW_HASKELL__ >= 708
 import Data.Coerce
-#endif
 import Prelude hiding (lookup)
 
 main = do
@@ -23,6 +21,7 @@ main = do
         m_even = M.fromAscList elems_even :: M.Map Int Int
         m_odd = M.fromAscList elems_odd :: M.Map Int Int
     evaluate $ rnf [m, m_even, m_odd]
+    evaluate $ rnf elems_rev
     defaultMain
         [ bench "lookup absent" $ whnf (lookup evens) m_odd
         , bench "lookup present" $ whnf (lookup evens) m_even
@@ -72,8 +71,9 @@ main = do
         , bench "insertLookupWithKey' present" $ whnf (insLookupWithKey' elems_even) m_even
         , bench "mapWithKey" $ whnf (M.mapWithKey (+)) m
         , bench "foldlWithKey" $ whnf (ins elems) m
---         , bench "foldlWithKey'" $ whnf (M.foldlWithKey' sum 0) m
+        , bench "foldlWithKey'" $ whnf (M.foldlWithKey' sum 0) m
         , bench "foldrWithKey" $ whnf (M.foldrWithKey consPair []) m
+        , bench "foldrWithKey'" $ whnf (M.foldrWithKey' consPair []) m
         , bench "update absent" $ whnf (upd Just evens) m_odd
         , bench "update present" $ whnf (upd Just evens) m_even
         , bench "update delete" $ whnf (upd (const Nothing) evens) m
@@ -91,6 +91,9 @@ main = do
         , bench "fromList-desc" $ whnf M.fromList (reverse elems)
         , bench "fromAscList" $ whnf M.fromAscList elems
         , bench "fromDistinctAscList" $ whnf M.fromDistinctAscList elems
+        , bench "fromDistinctAscList:fusion" $ whnf (\n -> M.fromDistinctAscList [(i,i) | i <- [1..n]]) bound
+        , bench "fromDistinctDescList" $ whnf M.fromDistinctDescList elems_rev
+        , bench "fromDistinctDescList:fusion" $ whnf (\n -> M.fromDistinctDescList [(i,i) | i <- [n,n-1..1]]) bound
         , bench "minView" $ whnf (\m' -> case M.minViewWithKey m' of {Nothing -> 0; Just ((k,v),m'') -> k+v+M.size m''}) (M.fromAscList $ zip [1..10::Int] [100..110::Int])
         ]
   where
@@ -98,6 +101,7 @@ main = do
     elems = zip keys values
     elems_even = zip evens evens
     elems_odd = zip odds odds
+    elems_rev = reverse elems
     keys = [1..bound]
     evens = [2,4..bound]
     odds = [1,3..bound]
@@ -133,11 +137,7 @@ atIns xs m = foldl' (\m (k, v) -> runIdentity (alterF (\_ -> Identity (Just v)) 
 
 newtype Ident a = Ident { runIdent :: a }
 instance Functor Ident where
-#if __GLASGOW_HASKELL__ >= 708
   fmap = coerce
-#else
-  fmap f (Ident a) = Ident (f a)
-#endif
 
 atInsNoRules :: [(Int, Int)] -> M.Map Int Int -> M.Map Int Int
 atInsNoRules xs m = foldl' (\m (k, v) -> runIdent (alterF (\_ -> Ident (Just v)) k m)) m xs

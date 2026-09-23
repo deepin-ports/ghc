@@ -1,7 +1,7 @@
-resolver: lts-9.14
+resolver: lts-20.26
 
 packages:
 - .
 
 ghc-options:
-  "$locals": -Wall -Werror
+  "$locals": -Wall

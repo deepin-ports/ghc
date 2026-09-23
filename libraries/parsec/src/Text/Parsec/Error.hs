@@ -25,8 +25,10 @@ module Text.Parsec.Error
     , mergeError
     ) where
 
+import Control.Exception ( Exception )
 import Data.List ( nub, sort )
 import Data.Typeable ( Typeable )
+import qualified Data.Monoid as Mon
 
 import Text.Parsec.Pos
 
@@ -145,11 +147,16 @@ mergeError e1@(ParseError pos1 msgs1) e2@(ParseError pos2 msgs2)
     | null msgs2 && not (null msgs1) = e1
     | null msgs1 && not (null msgs2) = e2
     | otherwise
-    = case pos1 `compare` pos2 of
+      -- perfectly we'd compare the consumed token count
+      -- https://github.com/haskell/parsec/issues/175
+    = case compareErrorPos pos1 pos2 of
         -- select the longest match
         EQ -> ParseError pos1 (msgs1 ++ msgs2)
         GT -> e1
         LT -> e2
+
+compareErrorPos :: SourcePos -> SourcePos -> Ordering
+compareErrorPos x y = Mon.mappend (compare (sourceLine x) (sourceLine y)) (compare (sourceColumn x) (sourceColumn y))
 
 instance Show ParseError where
     show err
@@ -163,6 +170,9 @@ instance Eq ParseError where
         = errorPos l == errorPos r && messageStrs l == messageStrs r
         where
           messageStrs = map messageString . errorMessages
+
+-- | @since 3.1.17.0
+instance Exception ParseError
 
 -- Language independent show function
 
@@ -189,12 +199,12 @@ showErrorMessages msgOr msgUnknown msgExpecting msgUnExpected msgEndOfInput msgs
 
       showExpect      = showMany msgExpecting expect
       showUnExpect    = showMany msgUnExpected unExpect
-      showSysUnExpect | not (null unExpect) ||
-                        null sysUnExpect = ""
-                      | null firstMsg    = msgUnExpected ++ " " ++ msgEndOfInput
-                      | otherwise        = msgUnExpected ++ " " ++ firstMsg
-          where
-              firstMsg  = messageString (head sysUnExpect)
+      showSysUnExpect
+          | not (null unExpect)      = ""
+          | []      <- sysUnExpect   = ""
+          | msg : _ <- sysUnExpect
+          , null (messageString msg) = msgUnExpected ++ " " ++ msgEndOfInput
+          | msg : _ <- sysUnExpect   = msgUnExpected ++ " " ++ messageString msg
 
       showMessages      = showMany "" messages
 

@@ -1,5 +1,7 @@
-{-# LANGUAGE CPP                #-}
-{-# LANGUAGE DeriveDataTypeable #-}
+{-# OPTIONS_GHC -fno-warn-incomplete-uni-patterns #-}
+{-# LANGUAGE CPP                 #-}
+{-# LANGUAGE DeriveDataTypeable  #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 #if __GLASGOW_HASKELL__ >= 701
 {-# LANGUAGE Trustworthy        #-}
@@ -17,33 +19,34 @@
 --
 -- 'TBQueue' is a bounded version of 'TQueue'. The queue has a maximum
 -- capacity set when it is created.  If the queue already contains the
--- maximum number of elements, then 'writeTBQueue' blocks until an
+-- maximum number of elements, then 'writeTBQueue' retries until an
 -- element is removed from the queue.
 --
--- The implementation is based on the traditional purely-functional
--- queue representation that uses two lists to obtain amortised /O(1)/
+-- The implementation is based on an array to obtain /O(1)/
 -- enqueue and dequeue operations.
 --
 -- @since 2.4
 -----------------------------------------------------------------------------
 
 module Control.Concurrent.STM.TBQueue (
-        -- * TBQueue
-        TBQueue,
-        newTBQueue,
-        newTBQueueIO,
-        readTBQueue,
-        tryReadTBQueue,
-        flushTBQueue,
-        peekTBQueue,
-        tryPeekTBQueue,
-        writeTBQueue,
-        unGetTBQueue,
-        lengthTBQueue,
-        isEmptyTBQueue,
-        isFullTBQueue,
+    -- * TBQueue
+    TBQueue,
+    newTBQueue,
+    newTBQueueIO,
+    readTBQueue,
+    tryReadTBQueue,
+    flushTBQueue,
+    peekTBQueue,
+    tryPeekTBQueue,
+    writeTBQueue,
+    unGetTBQueue,
+    lengthTBQueue,
+    isEmptyTBQueue,
+    isFullTBQueue,
+    capacityTBQueue,
   ) where
 
+import           Control.Monad   (unless)
 import           Data.Typeable   (Typeable)
 import           GHC.Conc        (STM, TVar, newTVar, newTVarIO, orElse,
                                   readTVar, retry, writeTVar)
@@ -88,7 +91,7 @@ newTBQueue size = do
   wsize <- newTVar size
   return (TBQueue rsize read wsize write size)
 
--- |@IO@ version of 'newTBQueue'.  This is useful for creating top-level
+-- | @IO@ version of 'newTBQueue'.  This is useful for creating top-level
 -- 'TBQueue's using 'System.IO.Unsafe.unsafePerformIO', because using
 -- 'atomically' inside 'System.IO.Unsafe.unsafePerformIO' isn't
 -- possible.
@@ -130,8 +133,11 @@ readTBQueue (TBQueue rsize read _wsize write _size) = do
       case ys of
         [] -> retry
         _  -> do
-          let (z:zs) = reverse ys -- NB. lazy: we want the transaction to be
-                                  -- short, otherwise it will conflict
+          -- NB. lazy: we want the transaction to be
+          -- short, otherwise it will conflict
+          let ~(z,zs) = case reverse ys of
+                          z':zs' -> (z',zs')
+                          _      -> error "readTBQueue: impossible"
           writeTVar write []
           writeTVar read zs
           return z
@@ -139,7 +145,7 @@ readTBQueue (TBQueue rsize read _wsize write _size) = do
 -- | A version of 'readTBQueue' which does not retry. Instead it
 -- returns @Nothing@ if no value is available.
 tryReadTBQueue :: TBQueue a -> STM (Maybe a)
-tryReadTBQueue c = fmap Just (readTBQueue c) `orElse` return Nothing
+tryReadTBQueue q = fmap Just (readTBQueue q) `orElse` return Nothing
 
 -- | Efficiently read the entire contents of a 'TBQueue' into a list. This
 -- function never retries.
@@ -152,8 +158,8 @@ flushTBQueue (TBQueue rsize read wsize write size) = do
   if null xs && null ys
     then return []
     else do
-      writeTVar read []
-      writeTVar write []
+      unless (null xs) $ writeTVar read []
+      unless (null ys) $ writeTVar write []
       writeTVar rsize 0
       writeTVar wsize size
       return (xs ++ reverse ys)
@@ -161,10 +167,20 @@ flushTBQueue (TBQueue rsize read wsize write size) = do
 -- | Get the next value from the @TBQueue@ without removing it,
 -- retrying if the channel is empty.
 peekTBQueue :: TBQueue a -> STM a
-peekTBQueue c = do
-  x <- readTBQueue c
-  unGetTBQueue c x
-  return x
+peekTBQueue (TBQueue _ read _ write _) = do
+  xs <- readTVar read
+  case xs of
+    (x:_) -> return x
+    [] -> do
+      ys <- readTVar write
+      case ys of
+        [] -> retry
+        _  -> do
+          let (z:zs) = reverse ys -- NB. lazy: we want the transaction to be
+                                  -- short, otherwise it will conflict
+          writeTVar write []
+          writeTVar read (z:zs)
+          return z
 
 -- | A version of 'peekTBQueue' which does not retry. Instead it
 -- returns @Nothing@ if no value is available.
@@ -177,7 +193,7 @@ tryPeekTBQueue c = do
       unGetTBQueue c x
       return m
 
--- |Put a data item back onto a channel, where it will be the next item read.
+-- | Put a data item back onto a channel, where it will be the next item read.
 -- Blocks if the queue is full.
 unGetTBQueue :: TBQueue a -> a -> STM ()
 unGetTBQueue (TBQueue rsize read wsize _write _size) a = do
@@ -192,7 +208,7 @@ unGetTBQueue (TBQueue rsize read wsize _write _size) a = do
   xs <- readTVar read
   writeTVar read (a:xs)
 
--- |Return the length of a 'TBQueue'.
+-- | Return the length of a 'TBQueue'.
 --
 -- @since 2.5.0.0
 lengthTBQueue :: TBQueue a -> STM Natural
@@ -201,7 +217,7 @@ lengthTBQueue (TBQueue rsize _read wsize _write size) = do
   w <- readTVar wsize
   return $! size - r - w
 
--- |Returns 'True' if the supplied 'TBQueue' is empty.
+-- | Returns 'True' if the supplied 'TBQueue' is empty.
 isEmptyTBQueue :: TBQueue a -> STM Bool
 isEmptyTBQueue (TBQueue _rsize read _wsize write _size) = do
   xs <- readTVar read
@@ -212,7 +228,7 @@ isEmptyTBQueue (TBQueue _rsize read _wsize write _size) = do
                [] -> return True
                _  -> return False
 
--- |Returns 'True' if the supplied 'TBQueue' is full.
+-- | Returns 'True' if the supplied 'TBQueue' is full.
 --
 -- @since 2.4.3
 isFullTBQueue :: TBQueue a -> STM Bool
@@ -225,3 +241,9 @@ isFullTBQueue (TBQueue rsize _read wsize _write _size) = do
          if (r > 0)
             then return False
             else return True
+
+-- | The maximum number of elements the queue can hold.
+--
+-- @since 2.5.2.0
+capacityTBQueue :: TBQueue a -> Natural
+capacityTBQueue (TBQueue _ _ _ _ cap) = fromIntegral cap

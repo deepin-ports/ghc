@@ -3,89 +3,125 @@
 
 module UnitTests.Distribution.Client.Glob (tests) where
 
-#if !MIN_VERSION_base(4,8,0)
-import Control.Applicative
-#endif
-import Data.Char
-import Data.List
-import Distribution.Deprecated.Text (display, parse, simpleParse)
-import Distribution.Deprecated.ReadP
+import Distribution.Client.Compat.Prelude hiding (last)
+import Prelude ()
 
 import Distribution.Client.Glob
-import UnitTests.Distribution.Client.ArbitraryInstances
+import Distribution.Utils.Structured (structureHash)
+import UnitTests.Distribution.Client.ArbitraryInstances ()
 
+import GHC.Fingerprint (Fingerprint (..))
 import Test.Tasty
-import Test.Tasty.QuickCheck
 import Test.Tasty.HUnit
-import Control.Exception
-
+import Test.Tasty.QuickCheck
 
 tests :: [TestTree]
 tests =
   [ testProperty "print/parse roundtrip" prop_roundtrip_printparse
-  , testCase     "parse examples"        testParseCases
+  , testCase "parse examples" testParseCases
+  , testGroup
+      "Structured hashes"
+      [ testCase "GlobPiece" $ structureHash (Proxy :: Proxy GlobPiece) @?= Fingerprint 0xd5e5361866a30ea2 0x31fbfe7b58864782
+      , testCase "Glob" $ structureHash (Proxy :: Proxy Glob) @?= Fingerprint 0x3a5af41e8194eaa3 0xd8e461fdfdb0e07b
+      , testCase "FilePathRoot" $ structureHash (Proxy :: Proxy FilePathRoot) @?= Fingerprint 0x713373d51426ec64 0xda7376a38ecee5a5
+      , testCase "RootedGlob" $ structureHash (Proxy :: Proxy RootedGlob) @?= Fingerprint 0x0031d198379cd1bf 0x7246ab9b6c6e0e7d
+      ]
   ]
 
---TODO: [nice to have] tests for trivial globs, tests for matching,
+-- TODO: [nice to have] tests for trivial globs, tests for matching,
 -- tests for windows style file paths
 
-prop_roundtrip_printparse :: FilePathGlob -> Bool
+prop_roundtrip_printparse :: RootedGlob -> Property
 prop_roundtrip_printparse pathglob =
-  -- can't use simpleParse because it mis-handles trailing spaces
-  case [ x | (x, []) <- readP_to_S parse (display pathglob) ] of
-    xs@(_:_) -> last xs == pathglob
-    _        -> False
+  counterexample (prettyShow pathglob) $
+    eitherParsec (prettyShow pathglob) === Right pathglob
 
 -- first run, where we don't even call updateMonitor
 testParseCases :: Assertion
 testParseCases = do
+  RootedGlob (FilePathRoot "/") GlobDirTrailing <- testparse "/"
+  RootedGlob FilePathHomeDir GlobDirTrailing <- testparse "~/"
 
-  FilePathGlob (FilePathRoot "/") GlobDirTrailing <- testparse "/"
-  FilePathGlob FilePathHomeDir  GlobDirTrailing <- testparse "~/"
+  RootedGlob (FilePathRoot "A:\\") GlobDirTrailing <- testparse "A:/"
+  RootedGlob (FilePathRoot "Z:\\") GlobDirTrailing <- testparse "z:/"
+  RootedGlob (FilePathRoot "C:\\") GlobDirTrailing <- testparse "C:\\"
+  RootedGlob FilePathRelative (GlobFile [Literal "_:"]) <- testparse "_:"
 
-  FilePathGlob (FilePathRoot "A:\\") GlobDirTrailing <- testparse "A:/"
-  FilePathGlob (FilePathRoot "Z:\\") GlobDirTrailing <- testparse "z:/"
-  FilePathGlob (FilePathRoot "C:\\") GlobDirTrailing <- testparse "C:\\"
-  FilePathGlob FilePathRelative (GlobFile [Literal "_:"]) <- testparse "_:"
+  RootedGlob
+    FilePathRelative
+    (GlobFile [Literal "."]) <-
+    testparse "."
 
-  FilePathGlob FilePathRelative
-    (GlobFile [Literal "."]) <- testparse "."
+  RootedGlob
+    FilePathRelative
+    (GlobFile [Literal "~"]) <-
+    testparse "~"
 
-  FilePathGlob FilePathRelative
-    (GlobFile [Literal "~"]) <- testparse "~"
+  RootedGlob
+    FilePathRelative
+    (GlobDir [Literal "."] GlobDirTrailing) <-
+    testparse "./"
 
-  FilePathGlob FilePathRelative
-    (GlobDir  [Literal "."] GlobDirTrailing) <- testparse "./"
+  RootedGlob
+    FilePathRelative
+    (GlobFile [Literal "foo"]) <-
+    testparse "foo"
 
-  FilePathGlob FilePathRelative
-    (GlobFile [Literal "foo"]) <- testparse "foo"
+  RootedGlob
+    FilePathRelative
+    ( GlobDir
+        [Literal "foo"]
+        (GlobFile [Literal "bar"])
+      ) <-
+    testparse "foo/bar"
 
-  FilePathGlob FilePathRelative
-    (GlobDir [Literal "foo"]
-      (GlobFile [Literal "bar"])) <- testparse "foo/bar"
+  RootedGlob
+    FilePathRelative
+    ( GlobDir
+        [Literal "foo"]
+        (GlobDir [Literal "bar"] GlobDirTrailing)
+      ) <-
+    testparse "foo/bar/"
 
-  FilePathGlob FilePathRelative
-    (GlobDir [Literal "foo"]
-      (GlobDir [Literal "bar"] GlobDirTrailing)) <- testparse "foo/bar/"
+  RootedGlob
+    (FilePathRoot "/")
+    ( GlobDir
+        [Literal "foo"]
+        (GlobDir [Literal "bar"] GlobDirTrailing)
+      ) <-
+    testparse "/foo/bar/"
 
-  FilePathGlob (FilePathRoot "/")
-    (GlobDir [Literal "foo"]
-      (GlobDir [Literal "bar"] GlobDirTrailing)) <- testparse "/foo/bar/"
+  RootedGlob
+    (FilePathRoot "C:\\")
+    ( GlobDir
+        [Literal "foo"]
+        (GlobDir [Literal "bar"] GlobDirTrailing)
+      ) <-
+    testparse "C:\\foo\\bar\\"
 
-  FilePathGlob FilePathRelative
-    (GlobFile [WildCard]) <- testparse "*"
+  RootedGlob
+    FilePathRelative
+    (GlobFile [WildCard]) <-
+    testparse "*"
 
-  FilePathGlob FilePathRelative
-    (GlobFile [WildCard,WildCard]) <- testparse "**" -- not helpful but valid
+  RootedGlob
+    FilePathRelative
+    (GlobFile [WildCard, WildCard]) <-
+    testparse "**" -- not helpful but valid
+  RootedGlob
+    FilePathRelative
+    (GlobFile [WildCard, Literal "foo", WildCard]) <-
+    testparse "*foo*"
 
-  FilePathGlob FilePathRelative
-    (GlobFile [WildCard, Literal "foo", WildCard]) <- testparse "*foo*"
+  RootedGlob
+    FilePathRelative
+    (GlobFile [Literal "foo", WildCard, Literal "bar"]) <-
+    testparse "foo*bar"
 
-  FilePathGlob FilePathRelative
-    (GlobFile [Literal "foo", WildCard, Literal "bar"]) <- testparse "foo*bar"
-
-  FilePathGlob FilePathRelative
-    (GlobFile [Union [[WildCard], [Literal "foo"]]]) <- testparse "{*,foo}"
+  RootedGlob
+    FilePathRelative
+    (GlobFile [Union [[WildCard], [Literal "foo"]]]) <-
+    testparse "{*,foo}"
 
   parseFail "{"
   parseFail "}"
@@ -99,105 +135,14 @@ testParseCases = do
 
   return ()
 
-testparse :: String -> IO FilePathGlob
+testparse :: String -> IO RootedGlob
 testparse s =
-    case simpleParse s of
-      Just p  -> return p
-      Nothing -> throwIO $ HUnitFailure Nothing ("expected parse of: " ++ s)
+  case eitherParsec s of
+    Right p -> return p
+    Left err -> throwIO $ HUnitFailure Nothing ("expected parse of: " ++ s ++ " -- " ++ err)
 
 parseFail :: String -> Assertion
 parseFail s =
-    case simpleParse s :: Maybe FilePathGlob of
-      Just _  -> throwIO $ HUnitFailure Nothing ("expected no parse of: " ++ s)
-      Nothing -> return ()
-
-instance Arbitrary FilePathGlob where
-  arbitrary = (FilePathGlob <$> arbitrary <*> arbitrary)
-                `suchThat` validFilePathGlob
-
-  shrink (FilePathGlob root pathglob) =
-    [ FilePathGlob root' pathglob'
-    | (root', pathglob') <- shrink (root, pathglob)
-    , validFilePathGlob (FilePathGlob root' pathglob') ]
-
-validFilePathGlob :: FilePathGlob -> Bool
-validFilePathGlob (FilePathGlob FilePathRelative pathglob) =
-  case pathglob of
-    GlobDirTrailing             -> False
-    GlobDir [Literal "~"] _     -> False
-    GlobDir [Literal (d:":")] _ 
-      | isLetter d              -> False
-    _                           -> True
-validFilePathGlob _ = True
-
-instance Arbitrary FilePathRoot where
-  arbitrary =
-    frequency
-      [ (3, pure FilePathRelative)
-      , (1, pure (FilePathRoot unixroot))
-      , (1, FilePathRoot <$> windrive)
-      , (1, pure FilePathHomeDir)
-      ]
-    where
-      unixroot = "/"
-      windrive = do d <- choose ('A', 'Z'); return (d : ":\\")
-
-  shrink FilePathRelative     = []
-  shrink (FilePathRoot _)     = [FilePathRelative]
-  shrink FilePathHomeDir      = [FilePathRelative]
-
-
-instance Arbitrary FilePathGlobRel where
-  arbitrary = sized $ \sz ->
-    oneof $ take (max 1 sz)
-      [ pure GlobDirTrailing
-      , GlobFile  <$> (getGlobPieces <$> arbitrary)
-      , GlobDir   <$> (getGlobPieces <$> arbitrary)
-                  <*> resize (sz `div` 2) arbitrary
-      ]
-
-  shrink GlobDirTrailing = []
-  shrink (GlobFile glob) =
-      GlobDirTrailing
-    : [ GlobFile (getGlobPieces glob') | glob' <- shrink (GlobPieces glob) ]
-  shrink (GlobDir glob pathglob) =
-      pathglob
-    : GlobFile glob
-    : [ GlobDir (getGlobPieces glob') pathglob'
-      | (glob', pathglob') <- shrink (GlobPieces glob, pathglob) ]
-
-newtype GlobPieces = GlobPieces { getGlobPieces :: [GlobPiece] }
-  deriving Eq
-
-instance Arbitrary GlobPieces where
-  arbitrary = GlobPieces . mergeLiterals <$> shortListOf1 5 arbitrary
-
-  shrink (GlobPieces glob) =
-    [ GlobPieces (mergeLiterals (getNonEmpty glob'))
-    | glob' <- shrink (NonEmpty glob) ]
-
-mergeLiterals :: [GlobPiece] -> [GlobPiece]
-mergeLiterals (Literal a : Literal b : ps) = mergeLiterals (Literal (a++b) : ps)
-mergeLiterals (Union as : ps) = Union (map mergeLiterals as) : mergeLiterals ps
-mergeLiterals (p:ps) = p : mergeLiterals ps
-mergeLiterals []     = []
-
-instance Arbitrary GlobPiece where
-  arbitrary = sized $ \sz ->
-    frequency
-      [ (3, Literal <$> shortListOf1 10 (elements globLiteralChars))
-      , (1, pure WildCard)
-      , (1, Union <$> resize (sz `div` 2) (shortListOf1 5 (shortListOf1 5 arbitrary)))
-      ]
-
-  shrink (Literal str) = [ Literal str'
-                         | str' <- shrink str
-                         , not (null str')
-                         , all (`elem` globLiteralChars) str' ]
-  shrink WildCard       = []
-  shrink (Union as)     = [ Union (map getGlobPieces (getNonEmpty as'))
-                          | as' <- shrink (NonEmpty (map GlobPieces as)) ]
-
-globLiteralChars :: [Char]
-globLiteralChars = ['\0'..'\128'] \\ "*{},/\\"
-
+  case eitherParsec s :: Either String RootedGlob of
+    Right p -> throwIO $ HUnitFailure Nothing ("expected no parse of: " ++ s ++ " -- " ++ show p)
+    Left _ -> return ()

@@ -10,7 +10,7 @@
 
 #if defined(DEBUG)
 
-#include "PosixSource.h"
+#include "rts/PosixSource.h"
 #include "Rts.h"
 #include "RtsAPI.h"
 #include "rts/Bytecodes.h"
@@ -28,7 +28,6 @@
 int
 disInstr ( StgBCO *bco, int pc )
 {
-   int i;
    StgWord16 instr;
 
    StgWord16*     instrs      = (StgWord16*)(bco->instrs->payload);
@@ -75,54 +74,65 @@ disInstr ( StgBCO *bco, int pc )
          debugBelch("\n");
          pc += 4;
          break;
-      case bci_SWIZZLE:
-         debugBelch("SWIZZLE stkoff %d by %d\n",
-                         instrs[pc], (signed int)instrs[pc+1]);
-         pc += 2; break;
-      case bci_CCALL:
-         debugBelch("CCALL    marshaller at 0x%" FMT_Word "\n",
+      case bci_SWIZZLE: {
+         W_     stkoff = BCO_GET_LARGE_ARG;
+         StgInt by     = BCO_GET_LARGE_ARG;
+         debugBelch("SWIZZLE stkoff %" FMT_Word " by %" FMT_Int "\n", stkoff, by);
+         break; }
+      case bci_CCALL: {
+         debugBelch("CCALL    marshaller at 0x%" FMT_HexWord "\n",
                          literals[instrs[pc]] );
-         pc += 1; break;
+         pc += 1; break; }
+      case bci_PRIMCALL:
+         debugBelch("PRIMCALL\n");
+         break;
      case bci_STKCHECK:  {
          StgWord stk_words_reqd = BCO_GET_LARGE_ARG + 1;
          debugBelch("STKCHECK %" FMT_Word "\n", (W_)stk_words_reqd );
          break;
      }
-      case bci_PUSH_L:
-         debugBelch("PUSH_L   %d\n", instrs[pc] );
-         pc += 1; break;
-      case bci_PUSH_LL:
-         debugBelch("PUSH_LL  %d %d\n", instrs[pc], instrs[pc+1] );
-         pc += 2; break;
-      case bci_PUSH_LLL:
-         debugBelch("PUSH_LLL %d %d %d\n", instrs[pc], instrs[pc+1],
-                                                            instrs[pc+2] );
-         pc += 3; break;
-      case bci_PUSH8:
-         debugBelch("PUSH8    %d\n", instrs[pc] );
-         pc += 1; break;
-      case bci_PUSH16:
-         debugBelch("PUSH16   %d\n", instrs[pc] );
-         pc += 1; break;
-      case bci_PUSH32:
-         debugBelch("PUSH32   %d\n", instrs[pc] );
-         pc += 1; break;
-      case bci_PUSH8_W:
-         debugBelch("PUSH8_W  %d\n", instrs[pc] );
-         pc += 1; break;
-      case bci_PUSH16_W:
-         debugBelch("PUSH16_W %d\n", instrs[pc] );
-         pc += 1; break;
-      case bci_PUSH32_W:
-         debugBelch("PUSH32_W %d\n", instrs[pc] );
-         pc += 1; break;
+      case bci_PUSH_L: {
+         W_ x1 = BCO_GET_LARGE_ARG;
+         debugBelch("PUSH_L   %" FMT_Word "\n", x1 );
+         break; }
+      case bci_PUSH_LL: {
+         W_ x1 = BCO_GET_LARGE_ARG;
+         W_ x2 = BCO_GET_LARGE_ARG;
+         debugBelch("PUSH_LL  %" FMT_Word " %" FMT_Word "\n", x1, x2 );
+         break; }
+      case bci_PUSH_LLL: {
+         W_ x1 = BCO_GET_LARGE_ARG;
+         W_ x2 = BCO_GET_LARGE_ARG;
+         W_ x3 = BCO_GET_LARGE_ARG;
+         debugBelch("PUSH_LLL %" FMT_Word " %" FMT_Word " %" FMT_Word "\n", x1, x2, x3);
+         break; }
+      case bci_PUSH8: {
+         W_ x1 = BCO_GET_LARGE_ARG;
+         debugBelch("PUSH8    %" FMT_Word "\n", x1 );
+         break; }
+      case bci_PUSH16: {
+         W_ x1 = BCO_GET_LARGE_ARG;
+         debugBelch("PUSH16   %" FMT_Word "\n", x1 );
+         break; }
+      case bci_PUSH32: {
+         W_ x1 = BCO_GET_LARGE_ARG;
+         debugBelch("PUSH32   %" FMT_Word "\n", x1 );
+         break; }
+      case bci_PUSH8_W: {
+         W_ x1 = BCO_GET_LARGE_ARG;
+         debugBelch("PUSH8_W  %" FMT_Word "\n", x1 );
+         break; }
+      case bci_PUSH16_W: {
+         W_ x1 = BCO_GET_LARGE_ARG;
+         debugBelch("PUSH16_W %" FMT_Word "\n", x1 );
+         break; }
+      case bci_PUSH32_W: {
+         W_ x1 = BCO_GET_LARGE_ARG;
+         debugBelch("PUSH32_W %" FMT_Word "\n", x1 );
+         break; }
       case bci_PUSH_G:
          debugBelch("PUSH_G   " ); printPtr( ptrs[instrs[pc]] );
          debugBelch("\n" );
-         pc += 1; break;
-      case bci_PUSH_ALTS:
-         debugBelch("PUSH_ALTS  " ); printPtr( ptrs[instrs[pc]] );
-         debugBelch("\n");
          pc += 1; break;
       case bci_PUSH_ALTS_P:
          debugBelch("PUSH_ALTS_P  " ); printPtr( ptrs[instrs[pc]] );
@@ -148,6 +158,13 @@ disInstr ( StgBCO *bco, int pc )
          debugBelch("PUSH_ALTS_V  " ); printPtr( ptrs[instrs[pc]] );
          debugBelch("\n");
          pc += 1; break;
+      case bci_PUSH_ALTS_T:
+         debugBelch("PUSH_ALTS_T  ");
+         printPtr( ptrs[instrs[pc]] );
+         debugBelch(" 0x%" FMT_HexWord " ", literals[instrs[pc+1]] );
+         printPtr( ptrs[instrs[pc+2]] );
+         debugBelch("\n");
+         pc += 3; break;
       case bci_PUSH_PAD8:
          debugBelch("PUSH_PAD8\n");
          pc += 1; break;
@@ -159,28 +176,27 @@ disInstr ( StgBCO *bco, int pc )
          pc += 1; break;
       case bci_PUSH_UBX8:
          debugBelch(
-             "PUSH_UBX8 0x%" FMT_Word8 " ",
+             "PUSH_UBX8 0x%" FMT_HexWord8 "\n",
              (StgWord8) literals[instrs[pc]] );
-         debugBelch("\n");
          pc += 1; break;
       case bci_PUSH_UBX16:
          debugBelch(
-             "PUSH_UBX16 0x%" FMT_Word16 " ",
+             "PUSH_UBX16 0x%" FMT_HexWord16 "\n",
              (StgWord16) literals[instrs[pc]] );
-         debugBelch("\n");
          pc += 1; break;
       case bci_PUSH_UBX32:
          debugBelch(
-             "PUSH_UBX32 0x%" FMT_Word32 " ",
+             "PUSH_UBX32 0x%" FMT_HexWord32 "\n",
              (StgWord32) literals[instrs[pc]] );
-         debugBelch("\n");
          pc += 1; break;
-      case bci_PUSH_UBX:
+      case bci_PUSH_UBX: {
          debugBelch("PUSH_UBX ");
-         for (i = 0; i < instrs[pc+1]; i++)
-            debugBelch("0x%" FMT_Word " ", literals[i + instrs[pc]] );
+         W_ offset = BCO_GET_LARGE_ARG;
+         W_ nwords = BCO_GET_LARGE_ARG;
+         for (W_ i = 0; i < nwords; i++)
+            debugBelch("0x%" FMT_HexWord " ", literals[i + offset] );
          debugBelch("\n");
-         pc += 2; break;
+         break; }
       case bci_PUSH_APPLY_N:
           debugBelch("PUSH_APPLY_N\n");
           break;
@@ -214,35 +230,48 @@ disInstr ( StgBCO *bco, int pc )
       case bci_PUSH_APPLY_PPPPPP:
           debugBelch("PUSH_APPLY_PPPPPP\n");
           break;
-      case bci_SLIDE:
-         debugBelch("SLIDE     %d down by %d\n", instrs[pc], instrs[pc+1] );
-         pc += 2; break;
-      case bci_ALLOC_AP:
-         debugBelch("ALLOC_AP  %d words\n", instrs[pc] );
-         pc += 1; break;
-      case bci_ALLOC_AP_NOUPD:
-         debugBelch("ALLOC_AP_NOUPD %d words\n", instrs[pc] );
-         pc += 1; break;
-      case bci_ALLOC_PAP:
-         debugBelch("ALLOC_PAP %d arity, %d words\n",
-                 instrs[pc], instrs[pc+1] );
-         pc += 2; break;
-      case bci_MKAP:
-         debugBelch("MKAP      %d words, %d stkoff\n", instrs[pc+1],
-                                                           instrs[pc] );
-         pc += 2; break;
-      case bci_MKPAP:
-         debugBelch("MKPAP     %d words, %d stkoff\n", instrs[pc+1],
-                                                           instrs[pc] );
-         pc += 2; break;
-      case bci_UNPACK:
-         debugBelch("UNPACK    %d\n", instrs[pc] );
-         pc += 1; break;
-      case bci_PACK:
-         debugBelch("PACK      %d words with itbl ", instrs[pc+1] );
-         printPtr( (StgPtr)literals[instrs[pc]] );
+      case bci_SLIDE: {
+         W_ nwords = BCO_GET_LARGE_ARG;
+         W_ by     = BCO_GET_LARGE_ARG;
+         debugBelch("SLIDE     %" FMT_Word " down by %" FMT_Word "\n", nwords, by );
+         break; }
+      case bci_ALLOC_AP: {
+         W_ nwords = BCO_GET_LARGE_ARG;
+         debugBelch("ALLOC_AP  %" FMT_Word " words\n", nwords );
+         break; }
+      case bci_ALLOC_AP_NOUPD: {
+         W_ nwords = BCO_GET_LARGE_ARG;
+         debugBelch("ALLOC_AP_NOUPD %" FMT_Word " words\n", nwords );
+         break; }
+      case bci_ALLOC_PAP: {
+         W_ arity = BCO_GET_LARGE_ARG;
+         W_ nwords = BCO_GET_LARGE_ARG;
+         debugBelch("ALLOC_PAP %" FMT_Word " arity, %" FMT_Word " words\n",
+                 arity, nwords );
+         break; }
+      case bci_MKAP: {
+         W_ stkoff = BCO_GET_LARGE_ARG;
+         W_ nwords = BCO_GET_LARGE_ARG;
+         debugBelch("MKAP      %" FMT_Word " words, %" FMT_Word " stkoff\n", nwords,
+                                                           stkoff );
+         break; }
+      case bci_MKPAP: {
+         W_ stkoff = BCO_GET_LARGE_ARG;
+         W_ nwords = BCO_GET_LARGE_ARG;
+         debugBelch("MKPAP     %" FMT_Word " words, %" FMT_Word " stkoff\n", nwords,
+                                                      stkoff );
+         break; }
+      case bci_UNPACK: {
+         W_ nwords = BCO_GET_LARGE_ARG;
+         debugBelch("UNPACK    %" FMT_Word "\n", nwords );
+         break; }
+      case bci_PACK: {
+         int itbl = BCO_NEXT;
+         W_ nwords = BCO_GET_LARGE_ARG;
+         debugBelch("PACK      %" FMT_Word " words with itbl ", nwords );
+         printPtr( (StgPtr)literals[itbl] );
          debugBelch("\n");
-         pc += 2; break;
+         break; }
 
       case bci_TESTLT_I: {
           unsigned int discr  = BCO_NEXT;
@@ -250,26 +279,135 @@ disInstr ( StgBCO *bco, int pc )
           debugBelch("TESTLT_I  %" FMT_Int ", fail to %d\n", literals[discr], failto);
           break;
       }
+
+      case bci_TESTLT_I64: {
+          unsigned int discr  = BCO_NEXT;
+          int failto = BCO_GET_LARGE_ARG;
+          debugBelch("TESTLT_I64  %" FMT_Int64 ", fail to %d\n", *((StgInt64*)(literals+discr)), failto);
+          break;
+      }
+
+      case bci_TESTLT_I32: {
+          unsigned int discr  = BCO_NEXT;
+          int failto = BCO_GET_LARGE_ARG;
+          debugBelch("TESTLT_I32  %" FMT_Int ", fail to %d\n", literals[discr], failto);
+          break;
+      }
+
+      case bci_TESTLT_I16: {
+          unsigned int discr  = BCO_NEXT;
+          int failto = BCO_GET_LARGE_ARG;
+          debugBelch("TESTLT_I16  %" FMT_Int ", fail to %d\n", literals[discr], failto);
+          break;
+      }
+
+      case bci_TESTLT_I8: {
+          unsigned int discr  = BCO_NEXT;
+          int failto = BCO_GET_LARGE_ARG;
+          debugBelch("TESTLT_I8  %" FMT_Int ", fail to %d\n", literals[discr], failto);
+          break;
+      }
+
       case bci_TESTEQ_I:
          debugBelch("TESTEQ_I  %" FMT_Int ", fail to %d\n", literals[instrs[pc]],
                                                       instrs[pc+1]);
          pc += 2; break;
 
+      case bci_TESTEQ_I64:
+         debugBelch("TESTEQ_I64  %" FMT_Int64 ", fail to %d\n", *((StgInt64*)(literals+instrs[pc])),
+                                                      instrs[pc+1]);
+         pc += 2; break;
+
+      case bci_TESTEQ_I32:
+         debugBelch("TESTEQ_I32  %" FMT_Int ", fail to %d\n", literals[instrs[pc]],
+                                                      instrs[pc+1]);
+         pc += 2; break;
+
+      case bci_TESTEQ_I16:
+         debugBelch("TESTEQ_I16  %" FMT_Int ", fail to %d\n", literals[instrs[pc]],
+                                                      instrs[pc+1]);
+         pc += 2; break;
+
+      case bci_TESTEQ_I8:
+         debugBelch("TESTEQ_I8  %" FMT_Int ", fail to %d\n", literals[instrs[pc]],
+                                                      instrs[pc+1]);
+         pc += 2; break;
+
+      case bci_TESTLT_W: {
+          unsigned int discr  = BCO_NEXT;
+          int failto = BCO_GET_LARGE_ARG;
+          debugBelch("TESTLT_W  %" FMT_Word ", fail to %d\n", literals[discr], failto);
+          break;
+      }
+
+      case bci_TESTLT_W64: {
+          unsigned int discr  = BCO_NEXT;
+          int failto = BCO_GET_LARGE_ARG;
+          debugBelch("TESTLT_W64  %" FMT_Word64 ", fail to %d\n", *((StgWord64*)(literals+discr)), failto);
+          break;
+      }
+
+      case bci_TESTLT_W32: {
+          unsigned int discr  = BCO_NEXT;
+          int failto = BCO_GET_LARGE_ARG;
+          debugBelch("TESTLT_W32  %" FMT_Word ", fail to %d\n", literals[discr], failto);
+          break;
+      }
+
+      case bci_TESTLT_W16: {
+          unsigned int discr  = BCO_NEXT;
+          int failto = BCO_GET_LARGE_ARG;
+          debugBelch("TESTLT_W16  %" FMT_Word ", fail to %d\n", literals[discr], failto);
+          break;
+      }
+
+      case bci_TESTLT_W8: {
+          unsigned int discr  = BCO_NEXT;
+          int failto = BCO_GET_LARGE_ARG;
+          debugBelch("TESTLT_W8  %" FMT_Word ", fail to %d\n", literals[discr], failto);
+          break;
+      }
+
+      case bci_TESTEQ_W:
+         debugBelch("TESTEQ_W  %" FMT_Word ", fail to %d\n", literals[instrs[pc]],
+                                                      instrs[pc+1]);
+         pc += 2; break;
+
+      case bci_TESTEQ_W64:
+         debugBelch("TESTEQ_W64  %" FMT_Word64 ", fail to %d\n", *((StgWord64*)(literals+instrs[pc])),
+                                                      instrs[pc+1]);
+         pc += 2; break;
+
+      case bci_TESTEQ_W32:
+         debugBelch("TESTEQ_W32  %" FMT_Word ", fail to %d\n", literals[instrs[pc]],
+                                                      instrs[pc+1]);
+         pc += 2; break;
+
+      case bci_TESTEQ_W16:
+         debugBelch("TESTEQ_W16  %" FMT_Word ", fail to %d\n", literals[instrs[pc]],
+                                                      instrs[pc+1]);
+         pc += 2; break;
+
+      case bci_TESTEQ_W8:
+         debugBelch("TESTEQ_W8  %" FMT_Word ", fail to %d\n", literals[instrs[pc]],
+                                                      instrs[pc+1]);
+         pc += 2; break;
+
       case bci_TESTLT_F:
-         debugBelch("TESTLT_F  %" FMT_Int ", fail to %d\n", literals[instrs[pc]],
+         debugBelch("TESTLT_F  %f, fail to %d\n", *((StgFloat*)literals+instrs[pc]),
                                                       instrs[pc+1]);
          pc += 2; break;
       case bci_TESTEQ_F:
-         debugBelch("TESTEQ_F  %" FMT_Int ", fail to %d\n", literals[instrs[pc]],
+         debugBelch("TESTEQ_F  %f, fail to %d\n", *((StgFloat*)literals+instrs[pc]),
                                                       instrs[pc+1]);
          pc += 2; break;
 
       case bci_TESTLT_D:
-         debugBelch("TESTLT_D  %" FMT_Int ", fail to %d\n", literals[instrs[pc]],
+         debugBelch("TESTLT_D  %f, fail to %d\n", *((StgDouble*)(literals+instrs[pc])),
                                                       instrs[pc+1]);
          pc += 2; break;
       case bci_TESTEQ_D:
-         debugBelch("TESTEQ_D  %" FMT_Int ", fail to %d\n", literals[instrs[pc]],
+         debugBelch("TESTEQ_D  %f, fail to %d\n", *((StgDouble*)(literals+instrs[pc])),
                                                       instrs[pc+1]);
          pc += 2; break;
 
@@ -292,9 +430,6 @@ disInstr ( StgBCO *bco, int pc )
          debugBelch("ENTER\n");
          break;
 
-      case bci_RETURN:
-         debugBelch("RETURN\n" );
-         break;
       case bci_RETURN_P:
          debugBelch("RETURN_P\n" );
          break;
@@ -313,6 +448,9 @@ disInstr ( StgBCO *bco, int pc )
       case bci_RETURN_V:
          debugBelch("RETURN_V\n" );
          break;
+      case bci_RETURN_T:
+         debugBelch("RETURN_T\n ");
+         break;
 
       default:
          barf("disInstr: unknown opcode %u", (unsigned int) instr);
@@ -320,12 +458,6 @@ disInstr ( StgBCO *bco, int pc )
    return pc;
 }
 
-
-/* Something of a kludge .. how do we know where the end of the insn
-   array is, since it isn't recorded anywhere?  Answer: the first
-   short is the number of bytecodes which follow it.
-   See ByteCodeGen.linkBCO.insns_arr for construction ...
-*/
 void disassemble( StgBCO *bco )
 {
    uint32_t i, j;

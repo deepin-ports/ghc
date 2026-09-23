@@ -1,6 +1,6 @@
 module Syntax where
 
-import Data.List
+import Data.List (nub)
 
 ------------------------------------------------------------------
 -- Abstract syntax -----------------------------------------------
@@ -61,11 +61,13 @@ data Option
    | OptionInteger String Int     -- name = <int>
    | OptionVector [(String,String,Int)]  -- name = [(,...),...]
    | OptionFixity (Maybe Fixity)  -- fixity = infix{,l,r} <int> | Nothing
+   | OptionEffect PrimOpEffect    -- effect = NoEffect | DoNotSpeculate | CanFail | ThrowsException | ReadWriteEffect | FallibleReadWriteEffect
+   | OptionCanFailWarnFlag PrimOpCanFailWarnFlag -- can_fail_warning = DoNotWarnCanFail | WarnIfEffectIsCanFail | YesWarnCanFail
      deriving Show
 
 -- categorises primops
 data Category
-   = Dyadic | Monadic | Compare | GenPrimOp
+   = Compare | GenPrimOp
      deriving Show
 
 -- types
@@ -74,11 +76,12 @@ data Ty
    | TyC    Ty Ty -- We only allow one constraint, keeps the grammar simpler
    | TyApp  TyCon [Ty]
    | TyVar  TyVar
-   | TyUTup [Ty]   -- unboxed tuples; just a TyCon really, 
+   | TyUTup [Ty]   -- unboxed tuples; just a TyCon really,
                    -- but convenient like this
    deriving (Eq,Show)
 
 type TyVar = String
+type TyVarBinder = String
 
 data TyCon = TyCon String
            | SCALAR
@@ -108,6 +111,19 @@ data SourceText = SourceText String
                 | NoSourceText
                 deriving (Eq,Show)
 
+data PrimOpEffect
+  = NoEffect
+  | CanFail
+  | ThrowsException
+  | ReadWriteEffect
+  deriving (Eq, Show)
+
+data PrimOpCanFailWarnFlag
+  = DoNotWarnCanFail
+  | WarnIfEffectIsCanFail
+  | YesWarnCanFail
+  deriving (Eq, Show)
+
 ------------------------------------------------------------------
 -- Sanity checking -----------------------------------------------
 ------------------------------------------------------------------
@@ -115,9 +131,9 @@ data SourceText = SourceText String
 {- Do some simple sanity checks:
     * all the default field names are unique
     * for each PrimOpSpec, all override field names are unique
-    * for each PrimOpSpec, all overriden field names   
+    * for each PrimOpSpec, all overridden field names
           have a corresponding default value
-    * that primop types correspond in certain ways to the 
+    * that primop types correspond in certain ways to the
       Category: eg if Comparison, the type must be of the form
          T -> T -> Bool.
    Dies with "error" if there's a problem, else returns ().
@@ -130,7 +146,7 @@ sanityTop :: Info -> ()
 sanityTop (Info defs entries)
    = let opt_names = map get_attrib_name defs
          primops = filter is_primop entries
-     in  
+     in
      if   length opt_names /= length (nub opt_names)
      then error ("non-unique default attribute names: " ++ show opt_names ++ "\n")
      else myseqAll (map (sanityPrimOp opt_names) primops) ()
@@ -153,12 +169,8 @@ sanityPrimOp def_names p
          else ()
 
 sane_ty :: Category -> Ty -> Bool
-sane_ty Compare (TyF t1 (TyF t2 td)) 
+sane_ty Compare (TyF t1 (TyF t2 td))
    | t1 == t2 && td == TyApp (TyCon "Int#") []  = True
-sane_ty Monadic (TyF t1 td) 
-   | t1 == td  = True
-sane_ty Dyadic (TyF t1 (TyF t2 td))
-   | t1 == td && t2 == td  = True
 sane_ty GenPrimOp _
    = True
 sane_ty _ _
@@ -171,10 +183,12 @@ get_attrib_name (OptionString nm _) = nm
 get_attrib_name (OptionInteger nm _) = nm
 get_attrib_name (OptionVector _) = "vector"
 get_attrib_name (OptionFixity _) = "fixity"
+get_attrib_name (OptionEffect _) = "effect"
+get_attrib_name (OptionCanFailWarnFlag _) = "can_fail_warning"
 
 lookup_attrib :: String -> [Option] -> Maybe Option
 lookup_attrib _ [] = Nothing
-lookup_attrib nm (a:as) 
+lookup_attrib nm (a:as)
     = if get_attrib_name a == nm then Just a else lookup_attrib nm as
 
 is_vector :: Entry -> Bool

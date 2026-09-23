@@ -1,4 +1,5 @@
-{-# LANGUAGE RankNTypes, DataKinds, TypeFamilies #-}
+{-# LANGUAGE Haskell2010 #-}
+{-# LANGUAGE RankNTypes, DataKinds, TypeFamilies, TypeOperators #-}
 module FunArgs where
 
 f :: forall a. Ord a
@@ -22,7 +23,7 @@ h :: forall a b c
   -> b -- ^ Second argument
   -> c -- ^ Third argument
   -> forall d. d -- ^ Result
-h = undefined
+h _ _ _ = undefined
 
 
 i :: forall a (b :: ()) d. (d ~ '())

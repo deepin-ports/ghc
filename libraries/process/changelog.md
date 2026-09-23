@@ -1,5 +1,127 @@
 # Changelog for [`process` package](http://hackage.haskell.org/package/process)
 
+## 1.6.26.1 *May 2025*
+
+* Regenerate `configure` script (#343)
+
+## 1.6.26.0 *April 2025*
+
+* Add `System.Process.Environment.OsString`.
+* Bumps `base >= 4.12.0.0` (GHC 8.6+), `filepath >= 1.4.100.0`,
+  `unix >= 2.8.0.0`, and `Win32 >= 2.14.1.0`.
+* Drops support for GHC < 8.6.
+
+## 1.6.25.0 *September 2024*
+
+* Fix build with Javascript backend ([#327](https://github.com/haskell/process/issues/327))
+
+## 1.6.24.0 *September 2024*
+
+* Fix detection of `posix_spawn_file_actions_addchdir[_np]` ([#303](https://github.com/haskell/process/issues/303))
+
+## 1.6.23.0 *September 2024*
+
+* Fix command-line escaping logic on Windows when the command file ends with
+  a space or a dot. This is a follow-up for
+  [HSEC-2024-0003](https://github.com/haskell/security-advisories/tree/main/advisories/hackage/process/HSEC-2024-0003.md).
+* Migitate another manifestation of the BatBadBut vulnerability via
+  unescaped `%` expansions. This is another follow-up for 
+  [HSEC-2024-0003](https://github.com/haskell/security-advisories/tree/main/advisories/hackage/process/HSEC-2024-0003.md).
+  ([#313](https://github.com/haskell/process/issues/313))
+
+## 1.6.22.0 *August 2024*
+
+* Allow NUL to appear in arguments under POSIX. See
+  https://github.com/haskell/process/pull/320.  Thanks to @mmhat.
+
+## 1.6.21.0 *July 2024*
+
+* No longer attach finalizers to `Handle`s created by the
+  `System.Process.CommunicationHandle` API. Instead, all file descriptors are
+  manually closed by the API.
+
+  This fixes a bug in which a file descriptor could be closed multiple times.
+
+## 1.6.20.0 *April 2024*
+
+* Introduce `System.Process.CommunicationHandle`, allowing for platform-independent
+  inter-process communication using `Handle`s.
+* Expose `withForkWait` and `ignoreSigPipe` from `System.Process.Internals`.
+* Define new internal functions `rawFdToHandle` and (Windows only) `rawHANDLEToHandle`,
+  exported from `System.Process.Common`.
+
+## 1.6.19.0 *April 2024*
+
+* Adjust command-line escaping logic on Windows to ensure that occurrences of
+  characters with special significance to the Windows batch interpreter are
+  properly escaped in arguments passed to `.bat` and `.cmd` processes.
+  This addresses
+  [HSEC-2024-0003](https://github.com/haskell/security-advisories/tree/main/advisories/hackage/process/HSEC-2024-0003.md).
+* Fix double-closing of stdin/stdout/stderr fds with POSIX `fork/exec` backend.
+  [#306](https://github.com/haskell/process/issues/306)
+* Add support for `posix_spawn_file_actions_addchdir_np`
+
+## 1.6.18.0 *September 2023*
+
+* Fix deadlock when waiting for process completion and process jobs [#273](https://github.com/haskell/process/issues/273)
+* Support `delegate_ctlc` on Windows. [#278](https://github.com/haskell/process/pull/278)
+* Drop support for `vfork` [#261](https://github.com/haskell/process/pull/261)
+* Javascript backend support
+* Fix potential segmentation fault on macOS [#295](https://github.com/haskell/process/pull/295)
+
+## 1.6.17.0 *February 2023*
+
+* Improved documentation for the `OpenExtHandle` constructor.
+
+## 1.6.16.0 *October 2022*
+
+* `posix_spawn`: Don't rely on addclose not failing for closed fds [#251](https://github.com/haskell/process/issues/251)
+* Support unix 2.8 [#258](https://github.com/haskell/process/issues/258)
+
+## 1.6.15.0 *August 2022*
+
+* Correct permissions on createPipe on Windows [234](https://github.com/haskell/process/pull/234)
+* Ensure that both ends of pipes on Windows are created in the same mode  [234](https://github.com/haskell/process/pull/234)
+* Fixed an issue with WINIO where giving an application an inherited pipe can cause it to misbehave [245](https://github.com/haskell/process/pull/245)
+* Set the encoding on WINIO created pipes to the local encoding as with MIO [248](https://github.com/haskell/process/pull/248)
+* cbits/fork-exec: Don't dup2 identical fds [#250](https://github.com/haskell/process/pull/250)
+
+## 1.6.14.0 *February 2022*
+
+* posix: Ensure that `errno` is set after `posix_spawnp` fails [#228](https://github.com/haskell/process/pull/228)
+* Fix `waitForProcess` not closing process handles with `delegate_ctlc` [#231](https://github.com/haskell/process/pull/231)
+* Don't use `posix_spawn` on platforms where it does not report `ENOENT` in caes where the
+  requested executable does not exist [#224](https://github.com/haskell/process/issues/224)
+* Ensure that `find_executable` correctly-locates executables when a change in
+  working directory is requested [#219](https://github.com/haskell/process/issues/219)
+* Fix capitalization error allowing `execvpe` to be used when available.
+
+## 1.6.13.2 *July 2021*
+
+* `posix_spawn`: Don't attempt to `dup2` identical fds [#214](https://github.com/haskell/process/pull/214)
+
+## 1.6.13.1 *July 2021*
+
+* Patches for the previous release
+
+## 1.6.13.0 *July 2021*
+
+* Refactoring of POSIX process logic [#208](https://github.com/haskell/process/pull/208)
+
+## 1.6.12.0 *June 2021*
+
+* Add function `getCurrentPid` to get the currently executing process' ID [#205](https://github.com/haskell/process/pull/205)
+
+## 1.6.11.0 *January 2021*
+
+* Windows: Add support for new I/O manager in GHC 8.12[#177](https://github.com/haskell/process/pull/177)
+* Deprecate use of `createPipeFd` in favor of `createPipe`
+* Fix MVar re-entrant problem on Windows with `terminateProcess` and process jobs. See [#199](https://github.com/haskell/process/pull/199)
+
+## 1.6.10.0 *June 2020*
+
+* Give a usable buffer to `_pipe` on Windows [#182](https://github.com/haskell/process/pull/182)
+
 ## 1.6.9 *May 2020*
 
 * Windows: Fix buffer size of `QueryInformationJobObject` request [#176](https://github.com/haskell/process/pull/176/files)

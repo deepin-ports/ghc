@@ -8,7 +8,7 @@
  *
  * ---------------------------------------------------------------------------*/
 
-#include "PosixSource.h"
+#include "rts/PosixSource.h"
 #include "Rts.h"
 #include "RtsAPI.h"
 
@@ -32,7 +32,7 @@
   for garbage collection because the act of passing them makes a copy
   from the heap, stack or wherever they are onto the C-world stack.
   However, if we were to pass a heap object such as a (Haskell) @String@
-  and a garbage collection occured before we finished using it, we'd run
+  and a garbage collection occurred before we finished using it, we'd run
   into problems since the heap object might have been moved or even
   deleted.
 
@@ -85,11 +85,26 @@
 
   Future plans for stable ptrs include distinguishing them by the
   generation of the pointed object. See
-  http://ghc.haskell.org/trac/ghc/ticket/7670 for details.
+  https://gitlab.haskell.org/ghc/ghc/issues/7670 for details.
 */
 
+/*
+ * Note [NULL StgStablePtr]
+ * ~~~~~~~~~~~~~~~~~~~~~~~~
+ *
+ * StablePtr index 0 is reserved to represent NULL. Consequently, we must
+ * subtract 1 to get the index into the array and add 1 to the index to get the
+ * StablePtr.
+ */
+
+
+// the global stable pointer entry table
 spEntry *stable_ptr_table = NULL;
+
+// the next free stable ptr, the free entries form a linked list where spEntry.addr points to the next after
 static spEntry *stable_ptr_free = NULL;
+
+// current stable pointer table size
 static unsigned int SPT_size = 0;
 #define INIT_SPT_SIZE 64
 
@@ -107,6 +122,7 @@ static unsigned int SPT_size = 0;
 #error unknown SIZEOF_VOID_P
 #endif
 
+// old stable pointer tables
 static spEntry *old_SPTs[MAX_N_OLD_SPTS];
 static uint32_t n_old_SPTs = 0;
 
@@ -139,8 +155,9 @@ stablePtrUnlock(void)
  * -------------------------------------------------------------------------- */
 
 STATIC_INLINE void
-initSpEntryFreeList(spEntry *table, uint32_t n, spEntry *free)
+initSpEntryFreeList(spEntry *table, uint32_t n)
 {
+  spEntry* free = NULL;
   spEntry *p;
   for (p = table + n - 1; p >= table; p--) {
       p->addr = (P_)free;
@@ -156,7 +173,7 @@ initStablePtrTable(void)
     SPT_size = INIT_SPT_SIZE;
     stable_ptr_table = stgMallocBytes(SPT_size * sizeof(spEntry),
                                       "initStablePtrTable");
-    initSpEntryFreeList(stable_ptr_table,INIT_SPT_SIZE,NULL);
+    initSpEntryFreeList(stable_ptr_table,INIT_SPT_SIZE);
 
 #if defined(THREADED_RTS)
     initMutex(&stable_ptr_mutex);
@@ -171,6 +188,8 @@ initStablePtrTable(void)
 static void
 enlargeStablePtrTable(void)
 {
+    ASSERT_LOCK_HELD(&stable_ptr_mutex);
+
     uint32_t old_SPT_size = SPT_size;
     spEntry *new_stable_ptr_table;
 
@@ -191,15 +210,17 @@ enlargeStablePtrTable(void)
 
     /* When using the threaded RTS, the update of stable_ptr_table is assumed to
      * be atomic, so that another thread simultaneously dereferencing a stable
-     * pointer will always read a valid address.
+     * pointer will always read a valid address. Release ordering to ensure
+     * that the new table is visible to others.
      */
-    stable_ptr_table = new_stable_ptr_table;
+    RELEASE_STORE(&stable_ptr_table, new_stable_ptr_table);
 
-    initSpEntryFreeList(stable_ptr_table + old_SPT_size, old_SPT_size, NULL);
+    // add the new entries to the free list
+    initSpEntryFreeList(stable_ptr_table + old_SPT_size, old_SPT_size);
 }
 
 /* Note [Enlarging the stable pointer table]
- *
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  * To enlarge the stable pointer table, we allocate a new table, copy the
  * existing entries, and then store the old version of the table in old_SPTs
  * until we free it during GC.  By not immediately freeing the old version
@@ -234,6 +255,7 @@ exitStablePtrTable(void)
 {
     if (stable_ptr_table)
         stgFree(stable_ptr_table);
+
     stable_ptr_table = NULL;
     SPT_size = 0;
 
@@ -247,40 +269,62 @@ exitStablePtrTable(void)
 STATIC_INLINE void
 freeSpEntry(spEntry *sp)
 {
-    sp->addr = (P_)stable_ptr_free;
+    RELAXED_STORE(&sp->addr, (P_)stable_ptr_free);
     stable_ptr_free = sp;
 }
 
 void
 freeStablePtrUnsafe(StgStablePtr sp)
 {
-    ASSERT((StgWord)sp < SPT_size);
-    freeSpEntry(&stable_ptr_table[(StgWord)sp]);
+    ASSERT_LOCK_HELD(&stable_ptr_mutex);
+
+    // see Note [NULL StgStablePtr]
+    if (sp == NULL) {
+        return;
+    }
+
+    StgWord spw = (StgWord)sp - 1;
+
+    ASSERT(spw < SPT_size);
+
+    freeSpEntry(&stable_ptr_table[spw]);
 }
 
 void
 freeStablePtr(StgStablePtr sp)
 {
     stablePtrLock();
+
     freeStablePtrUnsafe(sp);
+
     stablePtrUnlock();
 }
 
 /* -----------------------------------------------------------------------------
- * Looking up
+ * Allocating stable pointers
  * -------------------------------------------------------------------------- */
 
 StgStablePtr
 getStablePtr(StgPtr p)
 {
-  StgWord sp;
-
   stablePtrLock();
-  if (!stable_ptr_free) enlargeStablePtrTable();
-  sp = stable_ptr_free - stable_ptr_table;
-  stable_ptr_free  = (spEntry*)(stable_ptr_free->addr);
-  stable_ptr_table[sp].addr = p;
+
+  if (!stable_ptr_free)
+      enlargeStablePtrTable();
+
+  // find the index of free stable ptr
+  StgWord sp = stable_ptr_free - stable_ptr_table;
+
+  // unlink the table entry we grabbed from the free list
+  stable_ptr_free = (spEntry*)(stable_ptr_free->addr);
+
+  // release store to pair with acquire load in deRefStablePtr
+  RELEASE_STORE(&stable_ptr_table[sp].addr, p);
+
   stablePtrUnlock();
+
+  // see Note [NULL StgStablePtr]
+  sp = sp + 1;
   return (StgStablePtr)(sp);
 }
 

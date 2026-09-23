@@ -1,10 +1,10 @@
-cabal-version:        2.0
+cabal-version:        3.0
 name:                 haddock-api
-version:              2.23.0
+version:              2.31.1
 synopsis:             A documentation-generation tool for Haskell libraries
 description:          Haddock is a documentation-generation tool for Haskell
                       libraries
-license:              BSD3
+license:              BSD-2-Clause
 license-file:         LICENSE
 author:               Simon Marlow, David Waern
 maintainer:           Alec Theriault <alec.theriault@gmail.com>, Alex Biehl <alexbiehl@gmail.com>, Simon Hengel <sol@typeful.net>, Mateusz Kowalczyk <fuuzetsu@fuuzetsu.co.uk>
@@ -13,6 +13,7 @@ bug-reports:          https://github.com/haskell/haddock/issues
 copyright:            (c) Simon Marlow, David Waern
 category:             Documentation
 build-type:           Simple
+tested-with:          GHC==9.6.*
 
 extra-source-files:
   CHANGES.md
@@ -42,11 +43,12 @@ library
   default-language: Haskell2010
 
   -- this package typically supports only single major versions
-  build-depends: base            ^>= 4.13.0
-               , ghc             ^>= 8.8
-               , ghc-paths       ^>= 0.1.0.9
-               , haddock-library ^>= 1.8.0
+  build-depends: base            ^>= 4.16.0
+               , ghc             ^>= 9.9
+               , ghc-paths       ^>= 0.1.0.12
+               , haddock-library ^>= 1.12
                , xhtml           ^>= 3000.2.2
+               , parsec          ^>= 3.1.13.0
 
   -- Versions for the dependencies below are transitively pinned by
   -- the non-reinstallable `ghc` package and hence need no version
@@ -56,16 +58,25 @@ library
                , containers
                , deepseq
                , directory
+               , exceptions
                , filepath
                , ghc-boot
+               , mtl
                , transformers
 
   hs-source-dirs: src
 
-  ghc-options: -funbox-strict-fields -Wall -fwarn-tabs -O2
-  ghc-options: -Wall
-  if impl(ghc >= 8.0)
-    ghc-options: -Wcompat -Wnoncanonical-monad-instances
+  ghc-options: -funbox-strict-fields -O2
+               -Wall
+               -Wcompat
+               -Wcompat-unqualified-imports
+               -Widentities
+               -Wredundant-constraints
+               -Wnoncanonical-monad-instances
+               -Wmissing-home-modules
+               -Wincomplete-uni-patterns
+               -Wincomplete-record-updates
+
 
   exposed-modules:
     Documentation.Haddock
@@ -74,15 +85,17 @@ library
     Haddock
     Haddock.Interface
     Haddock.Interface.Rename
+    Haddock.Interface.RenameType
     Haddock.Interface.Create
     Haddock.Interface.AttachInstances
     Haddock.Interface.Json
     Haddock.Interface.LexParseRn
     Haddock.Interface.ParseModuleHeader
-    Haddock.Interface.Specialize
     Haddock.Parser
     Haddock.Utils
     Haddock.Utils.Json
+    Haddock.Utils.Json.Types
+    Haddock.Utils.Json.Parser
     Haddock.Backends.Xhtml
     Haddock.Backends.Xhtml.Decl
     Haddock.Backends.Xhtml.DocMarkup
@@ -107,7 +120,6 @@ library
     Haddock.InterfaceFile
     Haddock.Options
     Haddock.GhcUtils
-    Haddock.Syb
     Haddock.Convert
     Paths_haddock_api
 
@@ -150,27 +162,28 @@ test-suite spec
     Haddock.Interface.LexParseRn
     Haddock.Interface.ParseModuleHeader
     Haddock.Interface.Rename
-    Haddock.Interface.Specialize
     Haddock.InterfaceFile
     Haddock.ModuleTree
     Haddock.Options
     Haddock.Parser
-    Haddock.Syb
     Haddock.Types
     Haddock.Utils
     Haddock.Utils.Json
+    Haddock.Utils.Json.Types
+    Haddock.Utils.Json.Parser
     Haddock.Version
     Paths_haddock_api
     Haddock.Backends.Hyperlinker.ParserSpec
     Haddock.Backends.Hyperlinker.Parser
     Haddock.Backends.Hyperlinker.Types
 
-  build-depends: ghc             ^>= 8.8
+  build-depends: ghc             ^>= 9.7
                , ghc-paths       ^>= 0.1.0.12
-               , haddock-library ^>= 1.8.0
+               , haddock-library ^>= 1.12
                , xhtml           ^>= 3000.2.2
-               , hspec           >= 2.4.4 && < 2.8
-               , QuickCheck      >= 2.11  && < 2.14
+               , hspec           ^>= 2.9
+               , parsec          ^>= 3.1.13.0
+               , QuickCheck      >= 2.11  && ^>= 2.14
 
   -- Versions for the dependencies below are transitively pinned by
   -- the non-reinstallable `ghc` package and hence need no version
@@ -181,12 +194,15 @@ test-suite spec
                , containers
                , deepseq
                , directory
+               , exceptions
                , filepath
                , ghc-boot
+               , ghc-boot-th
+               , mtl
                , transformers
 
   build-tool-depends:
-    hspec-discover:hspec-discover >= 2.4.4 && < 2.8
+    hspec-discover:hspec-discover ^>= 2.9
 
 source-repository head
   type:     git

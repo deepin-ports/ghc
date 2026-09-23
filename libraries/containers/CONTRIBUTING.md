@@ -9,46 +9,53 @@ All such changes should be discussed on the libraries@haskell.org mailing list.
 
 ## Building, testing, and benchmarking
 
-Building, testing, and benchmarking the containers package can be done using either `cabal-install` or `stack`.
+Building, testing, and benchmarking the containers package is done using `cabal`.
 
-### With cabal-install
+To avoid recompiling the tests' other dependencies when making changes, you can
+remove `containers` from the `packages` stanza of the `cabal.project` file.
+Note: this will not work in the unlikely event that you are fixing a bug that
+affects the test or benchmark framework itself. The `Data.Set` (for example)
+used in the tests and benchmarks is compiled separately from the one exposed by
+the `containers` package.
 
-Minimum cabal version: 1.24
+### Procedure
 
-_Note: The procedure here is a little weird because cabal configure is unable to solve for the constraints. We're looking into why that is ([#462](https://github.com/haskell/containers/issues/462))._
+Minimum cabal version: 2.4
 
+Build:
 ```
-cabal sandbox init
-cabal install --only-dependencies
-# Install test dependencies
-cabal install 'test-framework >= 0.3.3' 'test-framework-quickcheck2 >= 0.2.9' 'QuickCheck >= 2.4.0.1' 'ChasingBottoms' 'HUnit' 'test-framework-hunit'
-# Install benchmark dependencies
-cabal install 'criterion'
-# If you only need tests or benchmarks, you can omit the other --enable-xyz flag.
-cabal configure -v2 --enable-tests --enable-benchmarks
-cabal build
-cabal test
-cabal bench
-``` 
-
-
-### With [Stack](https://docs.haskellstack.org/en/stable/README/)
-
-Minimum stack version: 1.6.1
-
-```
-stack build
-stack test
-stack bench
+cabal build containers
 ```
 
+Run all tests or benchmarks:
+```
+cabal test containers-tests
+cabal bench containers-tests
+```
 
-## Troubleshooting
+To run a particular test or benchmark suite, name the target from
+`containers-tests/containers-tests.cabal`:
+```
+cabal run set-properties  # cabal test also works
+cabal run map-benchmarks  # cabal bench also works
+```
 
-- If you're using Stack, make sure you have version >= 1.6.1
-  ([stack#3624](https://github.com/commercialhaskell/stack/issues/3624),
-  [stack#3345](https://github.com/commercialhaskell/stack/issues/3345)).
+To run selective tests or benchmarks, you can pass a
+[filter pattern](https://hackage.haskell.org/package/tasty#patterns) as
+supported by `tasty`:
+```
+cabal run set-properties -- -p fromList
+cabal test set-properties --test-options "-p fromList"
+```
 
+#### For Windows users
+
+To compile `containers-tests`, you need symbolic links to be activated on git.
+To do so on Windows 10 or higher, follow these steps:
+
+1. Activate developer mode in your Windows preferences.
+2. Enable git symlinks: `git config --global core.symlinks true`.
+3. Clone the repository again once git is properly configured.
 
 ## Sending Pull Requests
 
@@ -75,10 +82,11 @@ When you send a pull request, please:
 
 ## Docs
 
-The internal docs are generated using Haddock which can be invoked with `cabal
-haddock` or `stack haddock`.
+The API documentation is generated using Haddock which is invoked with
+`cabal haddock`.
 
-The external docs are served by ReadTheDocs at
+The "user's manual" is served by ReadTheDocs at
 https://haskell-containers.readthedocs.io and live in the `docs/` directory. To
-build the docs locally run `pip install sphinx sphinx-autobuild` to install the
-dependencies, `git submodule update --init`, and then `cd docs/ && make html`.
+build it locally run `pip install sphinx sphinx-autobuild sphinx_rtd_theme` to
+install the dependencies, `git submodule update --init`, and then
+`cd docs/ && make html`.

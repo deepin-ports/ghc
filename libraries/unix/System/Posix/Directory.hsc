@@ -1,10 +1,6 @@
 {-# LANGUAGE CApiFFI #-}
 {-# LANGUAGE NondecreasingIndentation #-}
-#if __GLASGOW_HASKELL__ >= 709
 {-# LANGUAGE Safe #-}
-#else
-{-# LANGUAGE Trustworthy #-}
-#endif
 
 -----------------------------------------------------------------------------
 -- |
@@ -35,6 +31,7 @@ module System.Posix.Directory (
    DirStream,
    openDirStream,
    readDirStream,
+   readDirStreamMaybe,
    rewindDirStream,
    closeDirStream,
    DirStreamOffset,
@@ -51,7 +48,8 @@ module System.Posix.Directory (
    changeWorkingDirectoryFd,
   ) where
 
-import System.IO.Error
+import Control.Monad ((>=>))
+import Data.Maybe
 import System.Posix.Error
 import System.Posix.Types
 import Foreign
@@ -87,38 +85,21 @@ foreign import capi unsafe "HsUnix.h opendir"
 -- | @readDirStream dp@ calls @readdir@ to obtain the
 --   next directory entry (@struct dirent@) for the open directory
 --   stream @dp@, and returns the @d_name@ member of that
---  structure.
+--   structure.
+--
+--   Note that this function returns an empty filepath if the end of the
+--   directory stream is reached. For a safer alternative use
+--   'readDirStreamMaybe'.
 readDirStream :: DirStream -> IO FilePath
-readDirStream (DirStream dirp) =
-  alloca $ \ptr_dEnt  -> loop ptr_dEnt
- where
-  loop ptr_dEnt = do
-    resetErrno
-    r <- c_readdir dirp ptr_dEnt
-    if (r == 0)
-         then do dEnt <- peek ptr_dEnt
-                 if (dEnt == nullPtr)
-                    then return []
-                    else do
-                     entry <- (d_name dEnt >>= peekFilePath)
-                     c_freeDirEnt dEnt
-                     return entry
-         else do errno <- getErrno
-                 if (errno == eINTR) then loop ptr_dEnt else do
-                 let (Errno eo) = errno
-                 if (eo == 0)
-                    then return []
-                    else throwErrno "readDirStream"
+readDirStream = fmap (fromMaybe "") . readDirStreamMaybe
 
--- traversing directories
-foreign import ccall unsafe "__hscore_readdir"
-  c_readdir  :: Ptr CDir -> Ptr (Ptr CDirent) -> IO CInt
-
-foreign import ccall unsafe "__hscore_free_dirent"
-  c_freeDirEnt  :: Ptr CDirent -> IO ()
-
-foreign import ccall unsafe "__hscore_d_name"
-  d_name :: Ptr CDirent -> IO CString
+-- | @readDirStreamMaybe dp@ calls @readdir@ to obtain the
+--   next directory entry (@struct dirent@) for the open directory
+--   stream @dp@. It returns the @d_name@ member of that
+--   structure wrapped in a @Just d_name@ if an entry was read and @Nothing@ if
+--   the end of the directory stream was reached.
+readDirStreamMaybe :: DirStream -> IO (Maybe FilePath)
+readDirStreamMaybe = readDirStreamWith (dirEntName >=> peekFilePath)
 
 
 -- | @getWorkingDirectory@ calls @getcwd@ to obtain the name
@@ -147,18 +128,16 @@ foreign import ccall unsafe "getcwd"
 --   the current working directory to @dir@.
 changeWorkingDirectory :: FilePath -> IO ()
 changeWorkingDirectory path =
-  modifyIOError (`ioeSetFileName` path) $
-    withFilePath path $ \s ->
-       throwErrnoIfMinus1Retry_ "changeWorkingDirectory" (c_chdir s)
+  withFilePath path $ \s ->
+     throwErrnoPathIfMinus1Retry_ "changeWorkingDirectory" path (c_chdir s)
 
 foreign import ccall unsafe "chdir"
    c_chdir :: CString -> IO CInt
 
 removeDirectory :: FilePath -> IO ()
 removeDirectory path =
-  modifyIOError (`ioeSetFileName` path) $
-    withFilePath path $ \s ->
-       throwErrnoIfMinus1Retry_ "removeDirectory" (c_rmdir s)
+  withFilePath path $ \s ->
+     throwErrnoPathIfMinus1Retry_ "removeDirectory" path (c_rmdir s)
 
 foreign import ccall unsafe "rmdir"
    c_rmdir :: CString -> IO CInt

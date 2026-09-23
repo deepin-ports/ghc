@@ -21,7 +21,8 @@ module Haddock.Backends.Xhtml.Utils (
   keyword, punctuate,
 
   braces, brackets, pabrackets, parens, parenList, ubxParenList, ubxSumList,
-  arrow, comma, dcolon, dot, darrow, equals, forallSymbol, quote, promoQuote,
+  arrow, lollipop, comma, dcolon, dot, darrow, equals, forallSymbol, quote, promoQuote,
+  multAnnotation,
   atSign,
 
   hsep, vcat,
@@ -33,14 +34,12 @@ module Haddock.Backends.Xhtml.Utils (
 
 import Haddock.Utils
 
-import Data.Maybe
-
 import Text.XHtml hiding ( name, title, p, quote )
 import qualified Text.XHtml as XHtml
 
-import GHC      ( SrcSpan(..), srcSpanStartLine, Name )
-import Module   ( Module, ModuleName, moduleName, moduleNameString )
-import Name     ( getOccString, nameOccName, isValOcc )
+import GHC              ( SrcSpan(..), srcSpanStartLine, Name )
+import GHC.Unit.Module ( Module, ModuleName, moduleName, moduleNameString )
+import GHC.Types.Name   ( getOccString, nameOccName, isValOcc )
 
 
 -- | Replace placeholder string elements with provided values.
@@ -48,19 +47,18 @@ import Name     ( getOccString, nameOccName, isValOcc )
 -- Used to generate URL for customized external paths, usually provided with
 -- @--source-module@, @--source-entity@ and related command-line arguments.
 --
--- >>> spliceURL Nothing mmod mname Nothing "output/%{MODULE}.hs#%{NAME}"
+-- >>> spliceURL mmod mname Nothing "output/%{MODULE}.hs#%{NAME}"
 -- "output/Foo.hs#foo"
-spliceURL :: Maybe FilePath -> Maybe Module -> Maybe GHC.Name ->
+spliceURL :: Maybe Module -> Maybe GHC.Name ->
              Maybe SrcSpan -> String -> String
-spliceURL mfile mmod = spliceURL' mfile (moduleName <$> mmod)
+spliceURL mmod = spliceURL' (moduleName <$> mmod)
 
 
 -- | Same as 'spliceURL' but takes 'ModuleName' instead of 'Module'.
-spliceURL' :: Maybe FilePath -> Maybe ModuleName -> Maybe GHC.Name ->
+spliceURL' :: Maybe ModuleName -> Maybe GHC.Name ->
               Maybe SrcSpan -> String -> String
-spliceURL' maybe_file maybe_mod maybe_name maybe_loc = run
+spliceURL' maybe_mod maybe_name maybe_loc = run
  where
-  file = fromMaybe "" maybe_file
   mdl = case maybe_mod of
           Nothing           -> ""
           Just m -> moduleNameString m
@@ -75,28 +73,23 @@ spliceURL' maybe_file maybe_mod maybe_name maybe_loc = run
     Nothing -> ""
     Just span_ ->
       case span_ of
-      RealSrcSpan span__ ->
+      RealSrcSpan span__ _ ->
         show $ srcSpanStartLine span__
       UnhelpfulSpan _ -> ""
 
   run "" = ""
   run ('%':'M':rest) = mdl  ++ run rest
-  run ('%':'F':rest) = file ++ run rest
   run ('%':'N':rest) = name ++ run rest
   run ('%':'K':rest) = kind ++ run rest
   run ('%':'L':rest) = line ++ run rest
   run ('%':'%':rest) = '%'   : run rest
 
   run ('%':'{':'M':'O':'D':'U':'L':'E':'}':rest) = mdl  ++ run rest
-  run ('%':'{':'F':'I':'L':'E':'}':rest)         = file ++ run rest
   run ('%':'{':'N':'A':'M':'E':'}':rest)         = name ++ run rest
   run ('%':'{':'K':'I':'N':'D':'}':rest)         = kind ++ run rest
 
   run ('%':'{':'M':'O':'D':'U':'L':'E':'/':'.':'/':c:'}':rest) =
     map (\x -> if x == '.' then c else x) mdl ++ run rest
-
-  run ('%':'{':'F':'I':'L':'E':'/':'/':'/':c:'}':rest) =
-    map (\x -> if x == '/' then c else x) file ++ run rest
 
   run ('%':'{':'L':'I':'N':'E':'}':rest)         = line ++ run rest
 
@@ -187,12 +180,18 @@ ubxparens :: Html -> Html
 ubxparens h = toHtml "(#" <+> h <+> toHtml "#)"
 
 
-dcolon, arrow, darrow, forallSymbol, atSign :: Bool -> Html
+dcolon, arrow, lollipop, darrow, forallSymbol :: Bool -> Html
 dcolon unicode = toHtml (if unicode then "∷" else "::")
 arrow  unicode = toHtml (if unicode then "→" else "->")
+lollipop unicode = toHtml (if unicode then "⊸" else "%1 ->")
 darrow unicode = toHtml (if unicode then "⇒" else "=>")
 forallSymbol unicode = if unicode then toHtml "∀" else keyword "forall"
-atSign unicode = toHtml (if unicode then "@" else "@")
+
+atSign :: Html
+atSign = toHtml "@"
+
+multAnnotation :: Html
+multAnnotation = toHtml "%"
 
 dot :: Html
 dot = toHtml "."

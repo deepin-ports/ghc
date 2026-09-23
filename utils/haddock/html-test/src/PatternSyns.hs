@@ -1,7 +1,10 @@
+{-# LANGUAGE Haskell2010 #-}
 {-# LANGUAGE ExistentialQuantification, PatternSynonyms, PolyKinds, TypeOperators #-}
 
 -- | Testing some pattern synonyms
 module PatternSyns where
+
+import Data.Kind (Type)
 
 -- | FooType doc
 data FooType x = FooCtor x
@@ -22,7 +25,7 @@ data BlubType = forall x. Show x => BlubCtor x
 pattern Blub x = BlubCtor x
 
 -- | Doc for ('><')
-data (a :: *) >< b = Empty
+data (a :: Type) >< b = Empty
 
 -- | Pattern for 'Empty'
 pattern E = Empty

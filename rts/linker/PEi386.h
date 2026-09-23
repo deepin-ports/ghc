@@ -4,7 +4,9 @@
 #include "LinkerInternals.h"
 #include "PathUtils.h"
 #include <windows.h>
+#include <stdint.h>
 #include <stdbool.h>
+#include <inttypes.h>
 
 #include "BeginPrivate.h"
 
@@ -43,7 +45,7 @@ typedef struct _COFF_HEADER_INFO {
 
 void initLinker_PEi386( void );
 void exitLinker_PEi386( void );
-const char * addDLL_PEi386( pathchar *dll_name, HINSTANCE *instance  );
+const char * addDLL_PEi386( const pathchar *dll_name, HINSTANCE *instance  );
 void freePreloadObjectFile_PEi386( ObjectCode *oc );
 
 bool checkAndLoadImportLibrary( pathchar* arch_name, char* member_name, FILE* f);
@@ -54,11 +56,12 @@ bool removeLibrarySearchPath_PEi386( HsPtr dll_path_index );
 
 bool ocResolve_PEi386     ( ObjectCode* oc );
 bool ocRunInit_PEi386     ( ObjectCode *oc );
+bool ocRunFini_PEi386     ( ObjectCode *oc );
 bool ocGetNames_PEi386    ( ObjectCode* oc );
 bool ocVerifyImage_PEi386 ( ObjectCode* oc );
-SymbolAddr *lookupSymbol_PEi386(SymbolName *lbl);
-bool ocAllocateSymbolExtras_PEi386 ( ObjectCode* oc );
-SymbolAddr *lookupSymbolInDLLs ( const SymbolName* lbl );
+SymbolAddr *lookupSymbol_PEi386(SymbolName *lbl, ObjectCode *dependent, SymType *type);
+SymbolAddr *lookupSymbolInDLL_PEi386 (const SymbolName* lbl, HINSTANCE instance, pathchar* dll_name, ObjectCode *dependent);
+
 /* See Note [mingw-w64 name decoration scheme] */
 /* We use myindex to calculate array addresses, rather than
    simply doing the normal subscript thing.  That's because
@@ -116,6 +119,12 @@ union _COFF_symbol {
     COFF_symbol_ex ex;
 } COFF_symbol;
 
+typedef
+struct {
+    uint32_t TagIndex;
+    uint32_t Characteristics;
+} COFF_symbol_aux_weak_external;
+
 /* A record for storing handles into DLLs. */
 typedef
 struct _OpenedDLL {
@@ -123,13 +132,6 @@ struct _OpenedDLL {
     struct _OpenedDLL* next;
     HINSTANCE instance;
 } OpenedDLL;
-
-/* A record for storing indirectly linked functions from DLLs. */
-typedef
-struct _IndirectAddr {
-    SymbolAddr*           addr;
-    struct _IndirectAddr* next;
-} IndirectAddr;
 
 /* Some alignment information.  */
 typedef
@@ -142,7 +144,7 @@ struct _Alignments {
 COFF_OBJ_TYPE getObjectType ( char* image, pathchar* fileName );
 COFF_HEADER_INFO* getHeaderInfo ( ObjectCode* oc );
 size_t getSymbolSize ( COFF_HEADER_INFO *info );
-int32_t getSymSectionNumber ( COFF_HEADER_INFO *info, COFF_symbol* sym );
+uint32_t getSymSectionNumber ( COFF_HEADER_INFO *info, COFF_symbol* sym );
 uint32_t getSymValue ( COFF_HEADER_INFO *info, COFF_symbol* sym );
 uint8_t getSymStorageClass ( COFF_HEADER_INFO *info, COFF_symbol* sym );
 uint8_t getSymNumberOfAuxSymbols ( COFF_HEADER_INFO *info, COFF_symbol* sym );
@@ -158,7 +160,7 @@ uint8_t* getSymShortName ( COFF_HEADER_INFO *info, COFF_symbol* sym );
 
 /*
 Note [mingw-w64 name decoration scheme]
-
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 What's going on with name decoration? Well, original code
 have some crufty and ad-hocish paths related mostly to very old
 mingw gcc/binutils/runtime combinations. Now mingw-w64 offers pretty
@@ -171,6 +173,5 @@ because we have no stdcall convention on 64 bits.
 
 See #9218
 */
-
 
 #include "EndPrivate.h"

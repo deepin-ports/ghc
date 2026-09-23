@@ -1,5 +1,3 @@
-{-# LANGUAGE CPP, ScopedTypeVariables #-}
-
 -- |
 -- Copyright   : (c) 2011 Simon Meier
 -- License     : BSD3-style (see LICENSE)
@@ -14,27 +12,33 @@ module Data.ByteString.Builder.Prim.Tests (tests) where
 
 import           Data.Char  (ord)
 import qualified Data.ByteString.Lazy                  as L
+import qualified Data.ByteString.Lazy.Char8            as LC
 import           Data.ByteString.Builder
 import qualified Data.ByteString.Builder.Prim          as BP
 import           Data.ByteString.Builder.Prim.TestUtils
 
-#if defined(HAVE_TEST_FRAMEWORK)
-import           Test.Framework
-#else
-import           TestFramework
-#endif
+import           Test.Tasty
+import           Test.Tasty.QuickCheck
 
-
-tests :: [Test]
+tests :: [TestTree]
 tests = concat [ testsBinary, testsASCII, testsChar8, testsUtf8
-               , testsCombinatorsB ]
+               , testsCombinatorsB, [testCString, testCStringUtf8] ]
 
+testCString :: TestTree
+testCString = testProperty "cstring" $
+    toLazyByteString (BP.cstring "hello world!"#) ==
+      LC.pack "hello" `L.append` L.singleton 0x20 `L.append` LC.pack "world!"
+
+testCStringUtf8 :: TestTree
+testCStringUtf8 = testProperty "cstringUtf8" $
+    toLazyByteString (BP.cstringUtf8 "hello\xc0\x80world!"#) ==
+      LC.pack "hello" `L.append` L.singleton 0x00 `L.append` LC.pack "world!"
 
 ------------------------------------------------------------------------------
 -- Binary
 ------------------------------------------------------------------------------
 
-testsBinary :: [Test]
+testsBinary :: [TestTree]
 testsBinary =
   [ testBoundedF "word8"     bigEndian_list    BP.word8
   , testBoundedF "int8"      bigEndian_list    BP.int8
@@ -83,7 +87,7 @@ testsBinary =
 -- Latin-1  aka  Char8
 ------------------------------------------------------------------------------
 
-testsChar8 :: [Test]
+testsChar8 :: [TestTree]
 testsChar8 =
   [ testBoundedF "char8"     char8_list        BP.char8  ]
 
@@ -92,7 +96,7 @@ testsChar8 =
 -- ASCII
 ------------------------------------------------------------------------------
 
-testsASCII :: [Test]
+testsASCII :: [TestTree]
 testsASCII =
   [ testBoundedF "char7" char7_list BP.char7
 
@@ -133,7 +137,7 @@ testsASCII =
 -- UTF-8
 ------------------------------------------------------------------------------
 
-testsUtf8 :: [Test]
+testsUtf8 :: [TestTree]
 testsUtf8 =
   [ testBoundedB "charUtf8"  charUtf8_list  BP.charUtf8 ]
 
@@ -145,7 +149,7 @@ testsUtf8 =
 maybeB :: BP.BoundedPrim () -> BP.BoundedPrim a -> BP.BoundedPrim (Maybe a)
 maybeB nothing just = maybe (Left ()) Right BP.>$< BP.eitherB nothing just
 
-testsCombinatorsB :: [Test]
+testsCombinatorsB :: [TestTree]
 testsCombinatorsB =
   [ compareImpls "mapMaybe (via BoundedPrim)"
         (L.pack . concatMap encChar)

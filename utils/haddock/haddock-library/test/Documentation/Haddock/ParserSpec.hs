@@ -3,6 +3,7 @@
 
 module Documentation.Haddock.ParserSpec (main, spec) where
 
+import           Data.Char (isSpace)
 import           Data.String
 import qualified Documentation.Haddock.Parser as Parse
 import           Documentation.Haddock.Types
@@ -27,8 +28,7 @@ instance IsString a => IsString (Maybe a) where
 emptyMeta :: Meta
 emptyMeta =
   Meta {
-    _version = Nothing
-  , _package = Nothing
+    _metaSince = Nothing
   }
 
 parseParas :: String -> MetaDoc () String
@@ -119,6 +119,9 @@ spec = do
 
       it "can parse identifiers ending with a single quote" $ do
         "'foo''" `shouldParseTo` DocIdentifier "foo'"
+
+      it "can parse identifiers in backticks ending with a single quote" $ do
+        "`foo'`" `shouldParseTo` DocIdentifier "foo'"
 
       it "can parse an identifier containing a digit" $ do
         "'f0'" `shouldParseTo` DocIdentifier "f0"
@@ -279,6 +282,13 @@ spec = do
       it "supports title for deprecated picture syntax" $ do
         "<<b a z>>" `shouldParseTo` image "b" "a z"
 
+    context "when parsing inline math" $ do
+      it "accepts inline math immediately after punctuation" $ do
+        "(\\(1 + 2 = 3\\) is an example of addition)"
+          `shouldParseTo` "("
+          <> DocMathInline "1 + 2 = 3"
+          <> " is an example of addition)"
+
     context "when parsing display math" $ do
 
       it "accepts markdown syntax for display math containing newlines" $ do
@@ -288,8 +298,10 @@ spec = do
       it "parses a single word anchor" $ do
         "#foo#" `shouldParseTo` DocAName "foo"
 
-      it "parses a multi word anchor" $ do
-        "#foo bar#" `shouldParseTo` DocAName "foo bar"
+      -- Spaces are not allowed:
+      -- https://www.w3.org/TR/html51/dom.html#the-id-attribute
+      it "doesn't parse a multi word anchor" $ do
+        "#foo bar#" `shouldParseTo` "#foo bar#"
 
       it "parses a unicode anchor" $ do
         "#灼眼のシャナ#" `shouldParseTo` DocAName "灼眼のシャナ"
@@ -303,6 +315,9 @@ spec = do
 
       it "does not accept empty anchors" $ do
         "##" `shouldParseTo` "##"
+
+      it "does not accept anchors containing spaces" $ do
+        "{-# LANGUAGE GADTs #-}" `shouldParseTo` "{-# LANGUAGE GADTs #-}"
 
     context "when parsing emphasised text" $ do
       it "emphasises a word on its own" $ do
@@ -397,20 +412,20 @@ spec = do
     context "when parsing module strings" $ do
       it "should parse a module on its own" $ do
         "\"Module\"" `shouldParseTo`
-          DocModule "Module"
+          DocModule (ModLink "Module" Nothing)
 
       it "should parse a module inline" $ do
         "This is a \"Module\"." `shouldParseTo`
-          "This is a " <> DocModule "Module" <> "."
+          "This is a " <> DocModule (ModLink "Module" Nothing) <> "."
 
       it "can accept a simple module name" $ do
-        "\"Hello\"" `shouldParseTo` DocModule "Hello"
+        "\"Hello\"" `shouldParseTo` DocModule (ModLink "Hello" Nothing)
 
       it "can accept a module name with dots" $ do
-        "\"Hello.World\"" `shouldParseTo` DocModule "Hello.World"
+        "\"Hello.World\"" `shouldParseTo` DocModule (ModLink "Hello.World" Nothing)
 
       it "can accept a module name with unicode" $ do
-        "\"Hello.Worldλ\"" `shouldParseTo` DocModule "Hello.Worldλ"
+        "\"Hello.Worldλ\"" `shouldParseTo` DocModule (ModLink "Hello.Worldλ" Nothing)
 
       it "parses a module name with a trailing dot as regular quoted string" $ do
         "\"Hello.\"" `shouldParseTo` "\"Hello.\""
@@ -422,16 +437,85 @@ spec = do
         "\"Hello&[{}(=*)+]!\"" `shouldParseTo` "\"Hello&[{}(=*)+]!\""
 
       it "accepts a module name with unicode" $ do
-        "\"Foo.Barλ\"" `shouldParseTo` DocModule "Foo.Barλ"
+        "\"Foo.Barλ\"" `shouldParseTo` DocModule (ModLink "Foo.Barλ" Nothing)
 
       it "treats empty module name as regular double quotes" $ do
         "\"\"" `shouldParseTo` "\"\""
 
       it "accepts anchor reference syntax as DocModule" $ do
-        "\"Foo#bar\"" `shouldParseTo` DocModule "Foo#bar"
+        "\"Foo#bar\"" `shouldParseTo` DocModule (ModLink "Foo#bar" Nothing)
+
+      it "accepts anchor with hyphen as DocModule" $ do
+        "\"Foo#bar-baz\"" `shouldParseTo` DocModule (ModLink "Foo#bar-baz" Nothing)
 
       it "accepts old anchor reference syntax as DocModule" $ do
-        "\"Foo\\#bar\"" `shouldParseTo` DocModule "Foo\\#bar"
+        "\"Foo\\#bar\"" `shouldParseTo` DocModule (ModLink "Foo\\#bar" Nothing)
+
+    context "when parsing labeled module links" $ do
+      it "parses a simple labeled module link" $ do
+        "[some label](\"Some.Module\")" `shouldParseTo`
+          DocModule (ModLink "Some.Module" (Just "some label"))
+
+      it "allows escaping in label" $ do
+        "[some\\] label](\"Some.Module\")" `shouldParseTo`
+          DocModule (ModLink "Some.Module" (Just "some] label"))
+
+      it "strips leading and trailing whitespace from label" $ do
+        "[  some label  ](\"Some.Module\")" `shouldParseTo`
+          DocModule (ModLink "Some.Module" (Just "some label"))
+
+      it "allows whitespace in module name link" $ do
+        "[some label]( \"Some.Module\"\t )" `shouldParseTo`
+          DocModule (ModLink "Some.Module" (Just "some label"))
+
+      it "allows inline markup in the label" $ do
+        "[something /emphasized/](\"Some.Module\")" `shouldParseTo`
+          DocModule (ModLink "Some.Module" (Just ("something " <> DocEmphasis "emphasized")))
+
+      it "should parse a labeled module on its own" $ do
+        "[label](\"Module\")" `shouldParseTo`
+          DocModule (ModLink "Module" (Just "label"))
+
+      it "should parse a labeled module inline" $ do
+        "This is a [label](\"Module\")." `shouldParseTo`
+          "This is a " <> DocModule (ModLink "Module" (Just "label")) <> "."
+
+      it "can accept a labeled module name with dots" $ do
+        "[label](\"Hello.World\")" `shouldParseTo` DocModule (ModLink "Hello.World" (Just "label"))
+
+      it "can accept a labeled module name with unicode" $ do
+        "[label](\"Hello.Worldλ\")" `shouldParseTo` DocModule (ModLink "Hello.Worldλ" (Just "label"))
+
+      it "parses a labeled module name with a trailing dot as a hyperlink" $ do
+        "[label](\"Hello.\")" `shouldParseTo`
+          hyperlink "\"Hello.\"" (Just "label")
+
+      it "parses a labeled module name with a space as a regular string" $ do
+        "[label](\"Hello World\")" `shouldParseTo` "[label](\"Hello World\")"
+
+      it "parses a module name with invalid characters as a hyperlink" $ do
+        "[label](\"Hello&[{}(=*+]!\")" `shouldParseTo`
+          hyperlink "\"Hello&[{}(=*+]!\"" (Just "label")
+
+      it "accepts a labeled module name with unicode" $ do
+        "[label](\"Foo.Barλ\")" `shouldParseTo`
+          DocModule (ModLink "Foo.Barλ" (Just "label"))
+
+      it "treats empty labeled module name as empty hyperlink" $ do
+        "[label](\"\")" `shouldParseTo`
+          hyperlink "\"\"" (Just "label")
+
+      it "accepts anchor reference syntax for labeled module name" $ do
+        "[label](\"Foo#bar\")" `shouldParseTo`
+          DocModule (ModLink "Foo#bar" (Just "label"))
+
+      it "accepts old anchor reference syntax for labeled module name" $ do
+        "[label](\"Foo\\#bar\")" `shouldParseTo`
+          DocModule (ModLink "Foo\\#bar" (Just "label"))
+
+      it "interprets empty label as a unlabeled module name" $ do
+        "[](\"Module.Name\")" `shouldParseTo`
+          "[](" <> DocModule (ModLink "Module.Name" Nothing) <> ")"
 
   describe "parseParas" $ do
     let infix 1 `shouldParseTo`
@@ -441,6 +525,10 @@ spec = do
     it "is total" $ do
       property $ \xs ->
         (length . show . parseParas) xs `shouldSatisfy` (> 0)
+
+    -- See <https://github.com/haskell/haddock/issues/1142>
+    it "doesn't crash on unicode whitespace" $ do
+      "\8197" `shouldParseTo` DocEmpty
 
     context "when parsing @since" $ do
       it "adds specified version to the result" $ do
@@ -458,6 +546,12 @@ spec = do
           MetaDoc { _meta = emptyMeta { _version = Nothing }
                   , _doc = DocParagraph "@since 0.5.0 foo" }
 
+      it "parses package name" $ do
+        parseParas "@since foo-bar-0.5.0" `shouldBe`
+          MetaDoc { _meta = emptyMeta { _metaSince = Just $ MetaSince { sincePackage = Just "foo-bar"
+                                                                      , sinceVersion = [0,5,0] } }
+                  , _doc = DocEmpty }
+
 
       context "when given multiple times" $ do
         it "gives last occurrence precedence" $ do
@@ -465,12 +559,16 @@ spec = do
               "@since 0.5.0"
             , "@since 0.6.0"
             , "@since 0.7.0"
-            ] `shouldBe` MetaDoc { _meta = emptyMeta { _version = Just [0,7,0] }
-                                 , _doc = DocEmpty }
+                                 ]
+          `shouldBe`
+          MetaDoc { _meta = emptyMeta { _metaSince = Just $ MetaSince { sincePackage = Nothing
+                                                                      , sinceVersion = [0,7,0] } }
+                  , _doc = DocEmpty }
 
 
     context "when parsing text paragraphs" $ do
-      let filterSpecial = filter (`notElem` (".(=#-[*`\v\f\n\t\r\\\"'_/@<> " :: String))
+      let isSpecial c = isSpace c || c `elem` (".(=#-[*`\\\"'_/@<>" :: String)
+          filterSpecial = filter (not . isSpecial)
 
       it "parses an empty paragraph" $ do
         "" `shouldParseTo` DocEmpty
@@ -496,27 +594,37 @@ spec = do
         it "turns it into a code block" $ do
           "@foo@" `shouldParseTo` DocCodeBlock "foo"
 
-      context "when a paragraph starts with a markdown link" $ do
-        it "correctly parses it as a text paragraph (not a definition list)" $ do
-          "[label](url)" `shouldParseTo`
-            DocParagraph (hyperlink "url" "label")
+      context "when a paragraph contains a markdown link" $ do
+        it "correctly parses the link" $ do
+          "Blah [label](url)" `shouldParseTo`
+            DocParagraph ("Blah " <> hyperlink "url" "label")
 
-        it "can be followed by an other paragraph" $ do
-          "[label](url)\n\nfoobar" `shouldParseTo`
-            DocParagraph (hyperlink "url" "label") <> DocParagraph "foobar"
-
-        context "when paragraph contains additional text" $ do
-          it "accepts more text after the link" $ do
-            "[label](url) foo bar baz" `shouldParseTo`
-              DocParagraph (hyperlink "url" "label" <> " foo bar baz")
-
-          it "accepts a newline right after the markdown link" $ do
-            "[label](url)\nfoo bar baz" `shouldParseTo`
-              DocParagraph (hyperlink "url" "label" <> " foo bar baz")
+        context "when the paragraph starts with the markdown link" $ do
+          it "correctly parses it as a text paragraph (not a definition list)" $ do
+            "[label](url)" `shouldParseTo`
+              DocParagraph (hyperlink "url" "label")
 
           it "can be followed by an other paragraph" $ do
-            "[label](url)foo\n\nbar" `shouldParseTo`
-              DocParagraph (hyperlink "url" "label" <> "foo") <> DocParagraph "bar"
+            "[label](url)\n\nfoobar" `shouldParseTo`
+              DocParagraph (hyperlink "url" "label") <> DocParagraph "foobar"
+
+          context "when paragraph contains additional text" $ do
+            it "accepts more text after the link" $ do
+              "[label](url) foo bar baz" `shouldParseTo`
+                DocParagraph (hyperlink "url" "label" <> " foo bar baz")
+
+            it "accepts a newline right after the markdown link" $ do
+              "[label](url)\nfoo bar baz" `shouldParseTo`
+                DocParagraph (hyperlink "url" "label" <> " foo bar baz")
+
+            it "can be followed by an other paragraph" $ do
+              "[label](url)foo\n\nbar" `shouldParseTo`
+                DocParagraph (hyperlink "url" "label" <> "foo") <> DocParagraph "bar"
+
+        context "when the link starts on a new line not at the beginning of the paragraph" $ do
+          it "correctly parses the link" $ do
+            "Bla\n[label](url)" `shouldParseTo`
+              DocParagraph ("Bla\n" <> hyperlink "url" "label")
 
     context "when parsing birdtracks" $ do
       it "parses them as a code block" $ do
@@ -700,6 +808,29 @@ spec = do
       it "accepts unicode in examples" $ do
         ">>> 灼眼\nシャナ" `shouldParseTo` DocExamples [Example "灼眼" ["シャナ"]]
 
+      it "preserves indentation in consecutive example lines" $ do
+        unlines
+          [ ">>> line 1"
+          , ">>>   line 2"
+          , ">>> line 3"
+          ]
+          `shouldParseTo` DocExamples
+            [ Example "line 1" []
+            , Example "  line 2" []
+            , Example "line 3" []
+            ]
+
+      it "resets indentation after results" $ do
+        unlines
+          [ ">>> line 1"
+          , "result"
+          , ">>>   line 2"
+          ]
+          `shouldParseTo` DocExamples
+            [ Example "line 1" ["result"]
+            , Example "line 2" []
+            ]
+
       context "when prompt is prefixed by whitespace" $ do
         it "strips the exact same amount of whitespace from result lines" $ do
           unlines [
@@ -730,7 +861,7 @@ spec = do
       it "can nest another type of list inside" $ do
         "* foo\n\n    1. bar" `shouldParseTo`
           DocUnorderedList [ DocParagraph "foo"
-                             <> DocOrderedList [DocParagraph "bar"]]
+                             <> DocOrderedList [(1, DocParagraph "bar")]]
 
       it "can nest a code block inside" $ do
         "* foo\n\n    @foo bar baz@" `shouldParseTo`
@@ -769,7 +900,7 @@ spec = do
           DocUnorderedList [ DocParagraph "foo"
                              <> DocUnorderedList [ DocParagraph "bar" ]
                            ]
-          <> DocOrderedList [ DocParagraph "baz" ]
+          <> DocOrderedList [ (1, DocParagraph "baz") ]
 
       it "allows arbitrary initial indent of a list" $ do
         unlines
@@ -793,20 +924,20 @@ spec = do
           DocDefList [ ("foo", "foov"
                                <> DocDefList [ ("bar", "barv") ])
                      ]
-          <> DocOrderedList [ DocParagraph "baz" ]
+          <> DocOrderedList [ (1, DocParagraph "baz") ]
 
       it "list order is preserved in presence of nesting + extra text" $ do
         "1. Foo\n\n    > Some code\n\n2. Bar\n\nSome text"
           `shouldParseTo`
-          DocOrderedList [ DocParagraph "Foo" <> DocCodeBlock "Some code"
-                         , DocParagraph "Bar"
+          DocOrderedList [ (1, DocParagraph "Foo" <> DocCodeBlock "Some code")
+                         , (2, DocParagraph "Bar")
                          ]
           <> DocParagraph (DocString "Some text")
 
         "1. Foo\n\n2. Bar\n\nSome text"
           `shouldParseTo`
-          DocOrderedList [ DocParagraph "Foo"
-                         , DocParagraph "Bar"
+          DocOrderedList [ (1, DocParagraph "Foo")
+                         , (2, DocParagraph "Bar")
                          ]
           <> DocParagraph (DocString "Some text")
 
@@ -890,9 +1021,9 @@ spec = do
           , " 3. three"
           ]
         `shouldParseTo` DocOrderedList [
-            DocParagraph "one"
-          , DocParagraph "two"
-          , DocParagraph "three"
+            (1, DocParagraph "one")
+          , (1, DocParagraph "two")
+          , (3, DocParagraph "three")
           ]
 
       it "ignores empty lines between list items" $ do
@@ -902,12 +1033,12 @@ spec = do
           , "2. two"
           ]
         `shouldParseTo` DocOrderedList [
-            DocParagraph "one"
-          , DocParagraph "two"
+            (1, DocParagraph "one")
+          , (2, DocParagraph "two")
           ]
 
       it "accepts an empty list item" $ do
-        "1." `shouldParseTo` DocOrderedList [DocParagraph DocEmpty]
+        "1." `shouldParseTo` DocOrderedList [(1, DocParagraph DocEmpty)]
 
       it "accepts multi-line list items" $ do
         unlines [
@@ -917,12 +1048,12 @@ spec = do
           , "more two"
           ]
         `shouldParseTo` DocOrderedList [
-            DocParagraph "point one\n  more one"
-          , DocParagraph "point two\nmore two"
+            (1, DocParagraph "point one\n  more one")
+          , (1, DocParagraph "point two\nmore two")
           ]
 
       it "accepts markup in list items" $ do
-        "1. /foo/" `shouldParseTo` DocOrderedList [DocParagraph (DocEmphasis "foo")]
+        "1. /foo/" `shouldParseTo` DocOrderedList [(1, DocParagraph (DocEmphasis "foo"))]
 
       it "requires empty lines between list and other paragraphs" $ do
         unlines [
@@ -932,7 +1063,7 @@ spec = do
           , ""
           , "baz"
           ]
-        `shouldParseTo` DocParagraph "foo" <> DocOrderedList [DocParagraph "bar"] <> DocParagraph "baz"
+        `shouldParseTo` DocParagraph "foo" <> DocOrderedList [(1, DocParagraph "bar")] <> DocParagraph "baz"
 
     context "when parsing definition lists" $ do
       it "parses a simple list" $ do
@@ -1019,8 +1150,8 @@ spec = do
                 ] `shouldParseTo`
           DocUnorderedList [ DocParagraph "bullet"
                            , DocParagraph "different bullet"]
-          <> DocOrderedList [ DocParagraph "ordered"
-                            , DocParagraph "different bullet"
+          <> DocOrderedList [ (1, DocParagraph "ordered")
+                            , (2, DocParagraph "different bullet")
                             ]
           <> DocDefList [ ("cat", "kitten")
                         , ("pineapple", "fruit")

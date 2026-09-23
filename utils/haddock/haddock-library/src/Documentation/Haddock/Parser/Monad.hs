@@ -1,9 +1,8 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE TypeSynonymInstances #-}
 -- |
 -- Module      :  Documentation.Haddock.Parser.Monad
 -- Copyright   :  (c) Alec Theriault 2018-2019,
@@ -29,27 +28,28 @@ import qualified Data.Text as T
 import           Data.Text                   ( Text )
 
 import           Control.Monad               ( mfilter )
-import           Data.Functor                ( ($>) )
 import           Data.String                 ( IsString(..) )
 import           Data.Bits                   ( Bits(..) )
 import           Data.Char                   ( ord )
 import           Data.List                   ( foldl' )
 import           Control.Applicative as App
 
-import           Documentation.Haddock.Types ( Version )
-import           Prelude hiding (takeWhile)
+import           Documentation.Haddock.Types ( MetaSince(..) )
 
--- | The only bit of information we really care about truding along with us
+import           Prelude hiding (takeWhile)
+import           CompatPrelude
+
+-- | The only bit of information we really care about trudging along with us
 -- through parsing is the version attached to a @\@since@ annotation - if
 -- the doc even contained one.
 newtype ParserState = ParserState {
-  parserStateSince :: Maybe Version
+  parserStateSince :: Maybe MetaSince
 } deriving (Eq, Show)
 
 initialParserState :: ParserState
 initialParserState = ParserState Nothing
 
-setSince :: Version -> Parser ()
+setSince :: MetaSince -> Parser ()
 setSince since = Parsec.modifyState (\st -> st{ parserStateSince = Just since })
 
 type Parser = Parsec.Parsec Text ParserState

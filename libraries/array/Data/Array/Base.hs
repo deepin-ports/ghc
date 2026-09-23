@@ -10,7 +10,7 @@
   , UnliftedFFITypes
   , RoleAnnotations
  #-}
-{-# OPTIONS_HADDOCK hide #-}
+{-# OPTIONS_HADDOCK not-home #-}
 
 -----------------------------------------------------------------------------
 -- |
@@ -25,18 +25,29 @@
 -- Basis for IArray and MArray.  Not intended for external consumption;
 -- use IArray or MArray instead.
 --
+-- = WARNING
+--
+-- This module is considered __internal__.
+--
+-- The Package Versioning Policy __does not apply__.
+--
+-- The contents of this module may change __in any way whatsoever__
+-- and __without any warning__ between minor versions of this package.
+--
+-- Authors importing this module are expected to track development
+-- closely.
 -----------------------------------------------------------------------------
 
 module Data.Array.Base where
 
 import Control.Monad.ST.Lazy ( strictToLazyST )
 import qualified Control.Monad.ST.Lazy as Lazy (ST)
-import Data.Ix ( Ix, range, index, rangeSize )
+import Data.Ix ( Ix, range, index, inRange, rangeSize )
 import Foreign.C.Types
 import Foreign.StablePtr
 
 import Data.Char
-import GHC.Arr          ( STArray )
+import GHC.Arr          ( STArray, unsafeIndex )
 import qualified GHC.Arr as Arr
 import qualified GHC.Arr as ArrST
 import GHC.ST           ( ST(..), runST )
@@ -183,35 +194,26 @@ listArray (l,u) es =
     let n = safeRangeSize (l,u)
     in unsafeArray (l,u) (zip [0 .. n - 1] es)
 
-{-# INLINE listArrayST #-}
+{-# INLINE genArray #-}
+-- | Constructs an immutable array using a generator function.
+--
+-- @since 0.5.6.0
+genArray :: (IArray a e, Ix i) => (i,i) -> (i -> e) -> a i e
+genArray (l,u) f = listArray (l,u) $ map f $ range (l,u)
+
+{-# INLINE listArrayST #-}   -- See Note [Inlining and fusion]
 listArrayST :: Ix i => (i,i) -> [e] -> ST s (STArray s i e)
-listArrayST (l,u) es = do
-    marr <- newArray_ (l,u)
-    let n = safeRangeSize (l,u)
-    let fillFromList i xs | i == n    = return ()
-                          | otherwise = case xs of
-            []   -> return ()
-            y:ys -> unsafeWrite marr i y >> fillFromList (i+1) ys
-    fillFromList 0 es
-    return marr
+listArrayST = newListArray
 
 {-# RULES
 "listArray/Array" listArray =
     \lu es -> runST (listArrayST lu es >>= ArrST.unsafeFreezeSTArray)
     #-}
 
-{-# INLINE listUArrayST #-}
+{-# INLINE listUArrayST #-}   -- See Note [Inlining and fusion]
 listUArrayST :: (MArray (STUArray s) e (ST s), Ix i)
              => (i,i) -> [e] -> ST s (STUArray s i e)
-listUArrayST (l,u) es = do
-    marr <- newArray_ (l,u)
-    let n = safeRangeSize (l,u)
-    let fillFromList i xs | i == n    = return ()
-                          | otherwise = case xs of
-            []   -> return ()
-            y:ys -> unsafeWrite marr i y >> fillFromList (i+1) ys
-    fillFromList 0 es
-    return marr
+listUArrayST = newListArray
 
 -- I don't know how to write a single rule for listUArrayST, because
 -- the type looks like constrained over 's', which runST doesn't
@@ -272,10 +274,22 @@ type ListUArray e = forall i . Ix i => (i,i) -> [e] -> UArray i e
     #-}
 
 {-# INLINE (!) #-}
--- | Returns the element of an immutable array at the specified index.
+-- | Returns the element of an immutable array at the specified index,
+-- or throws an exception if the index is out of bounds.
 (!) :: (IArray a e, Ix i) => a i e -> i -> e
 (!) arr i = case bounds arr of
               (l,u) -> unsafeAt arr $ safeIndex (l,u) (numElements arr) i
+
+{-# INLINE (!?) #-}
+-- | Returns 'Just' the element of an immutable array at the specified index,
+-- or 'Nothing' if the index is out of bounds.
+--
+-- @since 0.5.6.0
+(!?) :: (IArray a e, Ix i) => a i e -> i -> Maybe e
+(!?) arr i = let b = bounds arr in
+             if inRange b i
+             then Just $ unsafeAt arr $ unsafeIndex b i
+             else Nothing
 
 {-# INLINE indices #-}
 -- | Returns a list of all the valid indices in an array.
@@ -371,6 +385,94 @@ amap f arr = case bounds arr of
 ixmap :: (IArray a e, Ix i, Ix j) => (i,i) -> (i -> j) -> a j e -> a i e
 ixmap (l,u) f arr =
     array (l,u) [(i, arr ! f i) | i <- range (l,u)]
+
+-- | Lazy right-associative fold.
+--
+-- @since 0.5.8.0
+foldrArray :: (IArray a e, Ix i) => (e -> b -> b) -> b -> a i e -> b
+foldrArray f z = \a ->
+    let !n = numElements a
+        go i | i >= n = z
+             | otherwise = f (unsafeAt a i) (go (i+1))
+    in go 0
+{-# INLINE foldrArray #-}
+
+-- | Strict accumulating left-associative fold.
+--
+-- @since 0.5.8.0
+foldlArray' :: (IArray a e, Ix i) => (b -> e -> b) -> b -> a i e -> b
+foldlArray' f z0 = \a ->
+    let !n = numElements a
+        go !z i | i >= n = z
+                | otherwise = go (f z (unsafeAt a i)) (i+1)
+    in go z0 0
+{-# INLINE foldlArray' #-}
+
+-- | Lazy left-associative fold.
+--
+-- @since 0.5.8.0
+foldlArray :: (IArray a e, Ix i) => (b -> e -> b) -> b -> a i e -> b
+foldlArray f z = \a ->
+    let !n = numElements a
+        go i | i < 0 = z
+             | otherwise = f (go (i-1)) (unsafeAt a i)
+    in go (n-1)
+{-# INLINE foldlArray #-}
+
+-- | Strict accumulating right-associative fold.
+--
+-- @since 0.5.8.0
+foldrArray' :: (IArray a e, Ix i) => (e -> b -> b) -> b -> a i e -> b
+foldrArray' f z0 = \a ->
+    let !n = numElements a
+        go i !z | i < 0 = z
+                | otherwise = go (i-1) (f (unsafeAt a i) z)
+    in go (n-1) z0
+{-# INLINE foldrArray' #-}
+
+-- | Map elements to applicative actions, sequence them left-to-right, and
+-- discard the results.
+--
+-- @since 0.5.8.0
+traverseArray_
+    :: (IArray a e, Ix i, Applicative f) => (e -> f b) -> a i e -> f ()
+traverseArray_ f = foldrArray (\x z -> f x *> z) (pure ())
+{-# INLINE traverseArray_ #-}
+
+-- | @forArray_@ is 'traverseArray_' with its arguments flipped.
+--
+-- @since 0.5.8.0
+forArray_ :: (IArray a e, Ix i, Applicative f) => a i e -> (e -> f b) -> f ()
+forArray_ = flip traverseArray_
+{-# INLINE forArray_ #-}
+
+-- | Strict accumulating left-associative monadic fold.
+--
+-- @since 0.5.8.0
+foldlArrayM'
+     :: (IArray a e, Ix i, Monad m) => (b -> e -> m b) -> b -> a i e -> m b
+foldlArrayM' f z0 = \a ->
+    let !n = numElements a
+        go !z i | i >= n = pure z
+                | otherwise = do
+                    z' <- f z (unsafeAt a i)
+                    go z' (i+1)
+    in go z0 0
+{-# INLINE foldlArrayM' #-}
+
+-- | Strict accumulating right-associative monadic fold.
+--
+-- @since 0.5.8.0
+foldrArrayM'
+    :: (IArray a e, Ix i, Monad m) => (e -> b -> m b) -> b -> a i e -> m b
+foldrArrayM' f z0 = \a ->
+    let !n = numElements a
+        go i !z | i < 0 = pure z
+                | otherwise = do
+                    z' <- f (unsafeAt a i) z
+                    go (i-1) z'
+    in go (n-1) z0
+{-# INLINE foldrArrayM' #-}
 
 -----------------------------------------------------------------------------
 -- Normal polymorphic arrays
@@ -662,7 +764,7 @@ instance IArray UArray (StablePtr a) where
 
 -- bogus StablePtr value for initialising a UArray of StablePtr.
 nullStablePtr :: StablePtr a
-nullStablePtr = StablePtr (unsafeCoerce# 0#)
+nullStablePtr = StablePtr (unsafeCoerce# nullAddr#)
 
 instance IArray UArray Int8 where
     {-# INLINE bounds #-}
@@ -823,24 +925,27 @@ same way as for 'IArray'), and also over the type of the monad, @m@,
 in which the mutable array will be manipulated.
 -}
 class (Monad m) => MArray a e m where
-
-    -- | Returns the bounds of the array
+    -- | Returns the bounds of the array (lowest,highest).
     getBounds      :: Ix i => a i e -> m (i,i)
-    -- | Returns the number of elements in the array
+    -- | Returns the number of elements in the array.
     getNumElements :: Ix i => a i e -> m Int
 
     -- | Builds a new array, with every element initialised to the supplied
-    -- value.
+    -- value. The first and second element of the tuple specifies the lowest
+    -- and highest index, respectively.
     newArray    :: Ix i => (i,i) -> e -> m (a i e)
 
     -- | Builds a new array, with every element initialised to an
     -- undefined value. In a monadic context in which operations must
     -- be deterministic (e.g. the ST monad), the array elements are
     -- initialised to a fixed but undefined value, such as zero.
+    -- The first and second element of the tuple specifies the lowest
+    -- and highest index, respectively.
     newArray_ :: Ix i => (i,i) -> m (a i e)
 
     -- | Builds a new array, with every element initialised to an undefined
-    -- value.
+    -- value. The first and second element of the tuple specifies the lowest
+    -- and highest index, respectively.
     unsafeNewArray_ :: Ix i => (i,i) -> m (a i e)
 
     unsafeRead  :: Ix i => a i e -> Int -> m e
@@ -877,6 +982,8 @@ class (Monad m) => MArray a e m where
     -- default initialisation with undefined values if we *do* know the
     -- initial value and it is constant for all elements.
 
+    {-# MINIMAL getBounds, getNumElements, (newArray | unsafeNewArray_), unsafeRead, unsafeWrite #-}
+
 instance MArray IOArray e IO where
     {-# INLINE getBounds #-}
     getBounds (IOArray marr) = stToIO $ getBounds marr
@@ -886,19 +993,39 @@ instance MArray IOArray e IO where
     unsafeRead  = unsafeReadIOArray
     unsafeWrite = unsafeWriteIOArray
 
-{-# INLINE newListArray #-}
+{-# INLINE newListArray #-}   -- See Note [Inlining and fusion]
 -- | Constructs a mutable array from a list of initial elements.
 -- The list gives the elements of the array in ascending order
--- beginning with the lowest index.
+-- beginning with the lowest index. The first and second element
+-- of the tuple specifies the lowest and highest index, respectively.
 newListArray :: (MArray a e m, Ix i) => (i,i) -> [e] -> m (a i e)
 newListArray (l,u) es = do
     marr <- newArray_ (l,u)
     let n = safeRangeSize (l,u)
-    let fillFromList i xs | i == n    = return ()
-                          | otherwise = case xs of
-            []   -> return ()
-            y:ys -> unsafeWrite marr i y >> fillFromList (i+1) ys
-    fillFromList 0 es
+        f x k i
+            | i == n    = return ()
+            | otherwise = unsafeWrite marr i x >> k (i+1)
+    foldr f (\ !_i -> return ()) es 0
+    -- The bang above is important for GHC for unbox the Int.
+    return marr
+
+{-# INLINE newGenArray #-}
+-- | Constructs a mutable array using a generator function.
+-- It invokes the generator function in ascending order of the indices.
+--
+-- @since 0.5.6.0
+newGenArray :: (MArray a e m, Ix i) => (i,i) -> (i -> m e) -> m (a i e)
+newGenArray bnds f = do
+    let n = safeRangeSize bnds
+    marr <- unsafeNewArray_ bnds
+    let g ix k i
+            | i == n    = return ()
+            | otherwise = do
+                x <- f ix
+                unsafeWrite marr i x
+                k (i+1)
+    foldr g (\ !_i -> return ()) (range bnds) 0
+    -- The bang above is important for GHC for unbox the Int.
     return marr
 
 {-# INLINE readArray #-}
@@ -916,6 +1043,31 @@ writeArray marr i e = do
   (l,u) <- getBounds marr
   n <- getNumElements marr
   unsafeWrite marr (safeIndex (l,u) n i) e
+
+{-# INLINE modifyArray #-}
+-- | Modify an element in a mutable array
+--
+-- @since 0.5.6.0
+modifyArray :: (MArray a e m, Ix i) => a i e -> i -> (e -> e) -> m ()
+modifyArray marr i f = do
+  (l,u) <- getBounds marr
+  n <- getNumElements marr
+  let idx = safeIndex (l,u) n i
+  x <- unsafeRead marr idx
+  unsafeWrite marr idx (f x)
+
+{-# INLINE modifyArray' #-}
+-- | Modify an element in a mutable array. Strict in the written element.
+--
+-- @since 0.5.6.0
+modifyArray' :: (MArray a e m, Ix i) => a i e -> i -> (e -> e) -> m ()
+modifyArray' marr i f = do
+  (l,u) <- getBounds marr
+  n <- getNumElements marr
+  let idx = safeIndex (l,u) n i
+  x <- unsafeRead marr idx
+  let !x' = f x
+  unsafeWrite marr idx x'
 
 {-# INLINE getElems #-}
 -- | Return a list of all the elements of a mutable array
@@ -959,6 +1111,70 @@ mapIndices (l',u') f marr = do
                   unsafeWrite marr' (safeIndex (l',u') n' i') e
               | i' <- range (l',u')]
     return marr'
+
+-- | Strict accumulating left-associative fold.
+--
+-- @since 0.5.8.0
+foldlMArray' :: (MArray a e m, Ix i) => (b -> e -> b) -> b -> a i e -> m b
+foldlMArray' f = foldlMArrayM' (\z x -> pure (f z x))
+{-# INLINE foldlMArray' #-}
+
+-- | Strict accumulating right-associative fold.
+--
+-- @since 0.5.8.0
+foldrMArray' :: (MArray a e m, Ix i) => (e -> b -> b) -> b -> a i e -> m b
+foldrMArray' f = foldrMArrayM' (\x z -> pure (f x z))
+{-# INLINE foldrMArray' #-}
+
+-- | Strict accumulating left-associative monadic fold.
+--
+-- @since 0.5.8.0
+foldlMArrayM' :: (MArray a e m, Ix i) => (b -> e -> m b) -> b -> a i e -> m b
+foldlMArrayM' f z0 = \a -> do
+    !n <- getNumElements a
+    let go !z i | i >= n = pure z
+                | otherwise = do
+                    x <- unsafeRead a i
+                    z' <- f z x
+                    go z' (i+1)
+    go z0 0
+{-# INLINE foldlMArrayM' #-}
+
+-- | Strict accumulating right-associative monadic fold.
+--
+-- @since 0.5.8.0
+foldrMArrayM' :: (MArray a e m, Ix i) => (e -> b -> m b) -> b -> a i e -> m b
+foldrMArrayM' f z0 = \a -> do
+    !n <- getNumElements a
+    let go i !z | i < 0 = pure z
+                | otherwise = do
+                    x <- unsafeRead a i
+                    z' <- f x z
+                    go (i-1) z'
+    go (n-1) z0
+{-# INLINE foldrMArrayM' #-}
+
+-- | Map elements to monadic actions, sequence them left-to-right, and discard
+-- the results.
+--
+-- @since 0.5.8.0
+mapMArrayM_ :: (MArray a e m, Ix i) => (e -> m b) -> a i e -> m ()
+mapMArrayM_ f = \a -> do
+    !n <- getNumElements a
+    let go i | i >= n = pure ()
+             | otherwise = do
+                 x <- unsafeRead a i
+                 _ <- f x
+                 go (i+1)
+    go 0
+{-# INLINE mapMArrayM_ #-}
+
+-- | @forMArrayM_@ is 'mapMArrayM_' with its arguments flipped.
+--
+-- @since 0.5.8.0
+forMArrayM_ :: (MArray a e m, Ix i) => a i e -> (e -> m b) -> m ()
+forMArrayM_ = flip mapMArrayM_
+{-# INLINE forMArrayM_ #-}
 
 -----------------------------------------------------------------------------
 -- Polymorphic non-strict mutable arrays (ST monad)
@@ -1349,8 +1565,15 @@ instance MArray (STUArray s) Word64 (ST s) where
 
 bOOL_SCALE, wORD_SCALE, dOUBLE_SCALE, fLOAT_SCALE :: Int# -> Int#
 bOOL_SCALE n# =
-    -- + 7 to handle case where n is not divisible by 8
-    (n# +# 7#) `uncheckedIShiftRA#` 3#
+    -- Round the number of bits up to the next whole-word-aligned number
+    -- of bytes to avoid ghc#23132; the addition can signed-overflow but
+    -- that's OK because it will not unsigned-overflow and the logical
+    -- right-shift brings us back in-bounds
+#if SIZEOF_HSWORD == 4
+    ((n# +# 31#) `uncheckedIShiftRL#` 5#) `uncheckedIShiftL#` 2#
+#elif SIZEOF_HSWORD == 8
+    ((n# +# 63#) `uncheckedIShiftRL#` 6#) `uncheckedIShiftL#` 3#
+#endif
 wORD_SCALE   n# = safe_scale scale# n# where !(I# scale#) = SIZEOF_HSWORD
 dOUBLE_SCALE n# = safe_scale scale# n# where !(I# scale#) = SIZEOF_HSDOUBLE
 fLOAT_SCALE  n# = safe_scale scale# n# where !(I# scale#) = SIZEOF_HSFLOAT
@@ -1398,12 +1621,12 @@ freeze marr = do
 
 freezeSTUArray :: STUArray s i e -> ST s (UArray i e)
 freezeSTUArray (STUArray l u n marr#) = ST $ \s1# ->
-    case sizeofMutableByteArray# marr#  of { n# ->
-    case newByteArray# n# s1#           of { (# s2#, marr'# #) ->
+    case getSizeofMutableByteArray# marr# s1# of { (# s2#, n# #) ->
+    case newByteArray# n# s2#           of { (# s3#, marr'# #) ->
     case memcpy_freeze marr'# marr# (fromIntegral (I# n#)) of { IO m ->
-    case unsafeCoerce# m s2#            of { (# s3#, _ #) ->
-    case unsafeFreezeByteArray# marr'# s3# of { (# s4#, arr# #) ->
-    (# s4#, UArray l u n arr# #) }}}}}
+    case unsafeCoerce# m s3#            of { (# s4#, _ #) ->
+    case unsafeFreezeByteArray# marr'# s4# of { (# s5#, arr# #) ->
+    (# s5#, UArray l u n arr# #) }}}}}
 
 foreign import ccall unsafe "memcpy"
     memcpy_freeze :: MutableByteArray# s -> MutableByteArray# s -> CSize
@@ -1580,3 +1803,13 @@ unsafeFreezeIOArray (IOArray marr) = stToIO (ArrST.unsafeFreezeSTArray marr)
 
 castSTUArray :: STUArray s ix a -> ST s (STUArray s ix b)
 castSTUArray (STUArray l u n marr#) = return (STUArray l u n marr#)
+
+--------------------------------------------------------------------------------
+
+-- Note [Inlining and fusion]
+-- ~~~~~~~~~~~~~~~~~~~~~~~~~~
+-- Many functions in this module are marked INLINE because they consume their
+-- input with `foldr`. By inlining them, it is possible that the `foldr` will
+-- meet a `build` from the call site, and beneficial fusion will take place.
+-- That is, they become "good consumers". See array issue #8 for data showing
+-- the perf improvement that comes with fusion.

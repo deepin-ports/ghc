@@ -1,5 +1,5 @@
 [
-(0, "-mem2reg -globalopt"),
-(1, "-O1 -globalopt"),
-(2, "-O2")
+(0, "-passes=function(require<tbaa>),function(mem2reg),globalopt,function(lower-expect)"),
+(1, "-passes=default<O1>"),
+(2, "-passes=default<O2>")
 ]

@@ -1,10 +1,15 @@
 {-# LANGUAGE Trustworthy #-}
 {-# LANGUAGE MagicHash, NoImplicitPrelude, UnboxedTuples, UnliftedFFITypes #-}
 
+-- | Users should not import this module.  It is GHC internal only.
+
 module GHC.Debug ( debugLn, debugErrLn ) where
 
 import GHC.Prim
 import GHC.Types
+
+-- See W1 of Note [Tracking dependencies on primitives] in GHC.Internal.Base
+-- (This module uses the empty tuple.)
 import GHC.Tuple ()
 
 debugLn :: [Char] -> IO ()
